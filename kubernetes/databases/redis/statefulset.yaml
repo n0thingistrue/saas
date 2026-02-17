@@ -1,0 +1,305 @@
+# =============================================================================
+# StatefulSet - Redis 7.2 + Sentinel HA
+# =============================================================================
+# Deploie 3 instances Redis avec Sentinel integre :
+#   - redis-0 : Master initial (Node 1)
+#   - redis-1 : Replica (Node 1 - meme node pour Sentinel quorum)
+#   - redis-2 : Replica (Node 2 - HA cross-node)
+#
+# Chaque pod contient :
+#   - Container Redis 7.2 (data, port 6379)
+#   - Sidecar Sentinel (monitoring + failover, port 26379)
+#   - Sidecar redis_exporter (metriques Prometheus, port 9121)
+#
+# Anti-affinity PREFERENTIELLE (pas stricte) :
+#   - Prefere repartir sur differents nodes
+#   - Mais accepte 2 pods sur Node 1 si Node 2 est down
+#   - Garantit le quorum Sentinel (2/3) meme avec 1 node
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: production
+  labels:
+    app: redis
+    tier: cache
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: cache
+    app.kubernetes.io/version: "7.2"
+  annotations:
+    description: "Redis 7.2 HA avec Sentinel - 3 replicas (1 master + 2 replicas)"
+spec:
+  serviceName: redis-headless
+  replicas: 3
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        tier: cache
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/component: cache
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+
+      # --- Anti-affinity preferentielle ---
+      # Repartir les pods sur differents nodes si possible,
+      # mais tolere 2 pods sur le meme node (pour le quorum Sentinel)
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["redis"]
+                topologyKey: kubernetes.io/hostname
+
+      # --- Init Containers ---
+      initContainers:
+        # Permissions et tuning kernel
+        - name: init-sysctl
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "[INIT] Configuration systeme pour Redis..."
+              # Permissions sur le volume de donnees
+              mkdir -p /data
+              chown -R 999:999 /data
+              chmod 770 /data
+              echo "[INIT] Configuration terminee"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext:
+            runAsUser: 0
+            privileged: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+      # --- Containers ---
+      containers:
+        # -----------------------------------------------------------------
+        # Container principal : Redis 7.2
+        # -----------------------------------------------------------------
+        - name: redis
+          image: redis:7.2-bookworm
+          command: ["/scripts/init-redis.sh"]
+          ports:
+            - containerPort: 6379
+              name: redis
+              protocol: TCP
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: REDIS_PASSWORD
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          # Health checks
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -a $REDIS_PASSWORD ping | grep -q PONG"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -a $REDIS_PASSWORD ping | grep -q PONG"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Resources adaptes : le master utilise plus que les replicas
+          # On dimensionne pour le cas master (Sentinel peut promouvoir n'importe quel pod)
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: redis-config
+              mountPath: /etc/redis
+              readOnly: true
+            - name: init-scripts
+              mountPath: /scripts
+              readOnly: true
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            allowPrivilegeEscalation: false
+
+        # -----------------------------------------------------------------
+        # Sidecar : Redis Sentinel (failover manager)
+        # -----------------------------------------------------------------
+        - name: sentinel
+          image: redis:7.2-bookworm
+          command: ["/scripts/init-sentinel.sh"]
+          ports:
+            - containerPort: 26379
+              name: sentinel
+              protocol: TCP
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: REDIS_PASSWORD
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -p 26379 ping | grep -q PONG"
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -p 26379 ping | grep -q PONG"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: sentinel-config
+              mountPath: /etc/redis
+              readOnly: true
+            - name: sentinel-scripts
+              mountPath: /scripts
+              readOnly: true
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            allowPrivilegeEscalation: false
+
+        # -----------------------------------------------------------------
+        # Sidecar : redis_exporter (metriques Prometheus)
+        # -----------------------------------------------------------------
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.58.0
+          ports:
+            - containerPort: 9121
+              name: metrics
+              protocol: TCP
+          env:
+            - name: REDIS_ADDR
+              value: "redis://localhost:6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: REDIS_PASSWORD
+            - name: REDIS_EXPORTER_CHECK_KEYS
+              value: "*"
+            - name: REDIS_EXPORTER_CHECK_SINGLE_KEYS
+              value: ""
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+
+      # --- Volumes ---
+      volumes:
+        - name: redis-config
+          configMap:
+            name: redis-config
+            items:
+              - key: redis.conf
+                path: redis.conf
+        - name: init-scripts
+          configMap:
+            name: redis-config
+            items:
+              - key: init-redis.sh
+                path: init-redis.sh
+            defaultMode: 0755
+        - name: sentinel-config
+          configMap:
+            name: redis-sentinel-config
+            items:
+              - key: sentinel.conf
+                path: sentinel.conf
+        - name: sentinel-scripts
+          configMap:
+            name: redis-sentinel-config
+            items:
+              - key: init-sentinel.sh
+                path: init-sentinel.sh
+            defaultMode: 0755
+
+  # --- Volume Claim Templates ---
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: redis
+          app.kubernetes.io/name: redis
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-path-fast
+        resources:
+          requests:
+            # 10GB pour RDB snapshots + AOF
+            storage: 10Gi

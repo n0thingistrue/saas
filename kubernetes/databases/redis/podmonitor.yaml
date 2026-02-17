@@ -1,0 +1,148 @@
+# =============================================================================
+# PodMonitor + Alertes - Redis Metriques
+# =============================================================================
+# Configure Prometheus pour scraper redis_exporter sur chaque pod Redis.
+#
+# Metriques cles :
+#   - redis_up : instance disponible (1/0)
+#   - redis_connected_clients : nombre de clients connectes
+#   - redis_memory_used_bytes : memoire utilisee
+#   - redis_memory_max_bytes : memoire max configuree
+#   - redis_keyspace_hits_total / redis_keyspace_misses_total : hit ratio
+#   - redis_connected_slaves : nombre de replicas connectes
+#   - redis_master_link_up : lien replication actif (1/0)
+# =============================================================================
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: redis
+  namespace: monitoring
+  labels:
+    app: redis
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: monitoring-stack
+  annotations:
+    description: "Scraping metriques Redis et Sentinel"
+spec:
+  namespaceSelector:
+    matchNames:
+      - production
+  selector:
+    matchLabels:
+      app: redis
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+---
+# =============================================================================
+# PrometheusRule - Alertes Redis
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: redis-alerts
+  namespace: monitoring
+  labels:
+    app: redis
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: monitoring-stack
+    prometheus: kube-prometheus
+spec:
+  groups:
+    - name: redis.rules
+      rules:
+        # CRITIQUE : Redis instance down
+        - alert: RedisDown
+          expr: redis_up == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: redis
+          annotations:
+            summary: "Redis instance down ({{ $labels.pod }})"
+            description: "L'instance Redis {{ $labels.pod }} est indisponible."
+
+        # CRITIQUE : Redis master down (aucun master detecte)
+        - alert: RedisMasterDown
+          expr: count(redis_instance_info{role="master"}) == 0
+          for: 30s
+          labels:
+            severity: critical
+            service: redis
+          annotations:
+            summary: "Aucun Redis master disponible"
+            description: "Sentinel devrait promouvoir un nouveau master automatiquement."
+
+        # WARNING : Memoire Redis elevee
+        - alert: RedisMemoryHigh
+          expr: redis_memory_used_bytes / redis_memory_max_bytes * 100 > 90
+          for: 5m
+          labels:
+            severity: warning
+            service: redis
+          annotations:
+            summary: "Redis memoire > 90% ({{ $value | humanize }}%)"
+            description: "{{ $labels.pod }} utilise {{ $value | humanize }}% de la memoire max. Eviction allkeys-lru active."
+
+        # CRITIQUE : Memoire Redis saturee
+        - alert: RedisMemoryCritical
+          expr: redis_memory_used_bytes / redis_memory_max_bytes * 100 > 98
+          for: 2m
+          labels:
+            severity: critical
+            service: redis
+          annotations:
+            summary: "Redis memoire critique ({{ $value | humanize }}%)"
+            description: "Risque d'eviction massive. Augmenter maxmemory ou reduire les donnees."
+
+        # WARNING : Lien replication down
+        - alert: RedisMasterLinkDown
+          expr: redis_master_link_up == 0
+          for: 1m
+          labels:
+            severity: warning
+            service: redis
+          annotations:
+            summary: "Redis replication link down ({{ $labels.pod }})"
+            description: "Le replica {{ $labels.pod }} n'est plus connecte au master."
+
+        # WARNING : Eviction de cles elevee
+        - alert: RedisKeyEviction
+          expr: increase(redis_evicted_keys_total[5m]) > 100
+          for: 0m
+          labels:
+            severity: warning
+            service: redis
+          annotations:
+            summary: "Redis eviction elevee ({{ $value }} cles/5min)"
+            description: "Redis evince des cles car la memoire est pleine."
+
+        # WARNING : Trop de clients connectes
+        - alert: RedisTooManyConnections
+          expr: redis_connected_clients > 500
+          for: 5m
+          labels:
+            severity: warning
+            service: redis
+          annotations:
+            summary: "Redis trop de connexions ({{ $value }})"
+            description: "Plus de 500 clients connectes a {{ $labels.pod }}."
+
+        # INFO : Hit ratio faible (cache peu efficace)
+        - alert: RedisLowHitRatio
+          expr: |
+            (redis_keyspace_hits_total / (redis_keyspace_hits_total + redis_keyspace_misses_total)) * 100 < 80
+          for: 15m
+          labels:
+            severity: info
+            service: redis
+          annotations:
+            summary: "Redis hit ratio faible ({{ $value | humanize }}%)"
+            description: "Le cache Redis n'est efficace qu'a {{ $value | humanize }}%."

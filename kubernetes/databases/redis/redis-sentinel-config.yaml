@@ -1,0 +1,109 @@
+# =============================================================================
+# ConfigMap - Redis Sentinel Configuration
+# =============================================================================
+# Sentinel surveille les instances Redis et gere le failover :
+#   - Detection du master down (down-after-milliseconds: 5000ms)
+#   - Election d'un nouveau master (quorum: 2/3)
+#   - Reconfiguration des replicas vers le nouveau master
+#   - Notification des clients via le nouveau master address
+#
+# 3 instances Sentinel (1 par pod Redis) pour le quorum.
+# Quorum 2 = il faut 2 Sentinel sur 3 d'accord pour un failover.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-sentinel-config
+  namespace: production
+  labels:
+    app: redis
+    component: sentinel
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: sentinel-config
+    app.kubernetes.io/part-of: cache
+  annotations:
+    description: "Configuration Redis Sentinel - failover automatique"
+data:
+  # -------------------------------------------------------------------------
+  # sentinel.conf
+  # -------------------------------------------------------------------------
+  sentinel.conf: |
+    # Port Sentinel
+    port 26379
+    # Repertoire de travail
+    dir /data
+
+    # --- Monitoring du master ---
+    # sentinel monitor <master-name> <ip> <port> <quorum>
+    # Le master initial est redis-0 (sera mis a jour par Sentinel si failover)
+    sentinel monitor mymaster redis-0.redis-headless.production.svc.cluster.local 6379 2
+
+    # Mot de passe du master (injecte au demarrage)
+    # sentinel auth-pass mymaster <password>
+
+    # --- Timing ---
+    # Temps avant de considerer le master comme down
+    # 5 secondes : compromis entre detection rapide et false positives
+    sentinel down-after-milliseconds mymaster 5000
+
+    # Timeout pour le failover complet
+    # 60 secondes : laisse le temps a la promotion + reconfiguration
+    sentinel failover-timeout mymaster 60000
+
+    # Nombre de replicas a reconfigurer en parallele apres failover
+    # 1 = un par un (plus sur, evite une surcharge)
+    sentinel parallel-syncs mymaster 1
+
+    # --- Notifications ---
+    # Script execute lors d'un failover (optionnel)
+    # sentinel notification-script mymaster /scripts/notify.sh
+    # sentinel client-reconfig-script mymaster /scripts/reconfig.sh
+
+    # --- Protection ---
+    # Empecher un failover si pas assez de Sentinel joignables
+    sentinel deny-scripts-reconfig yes
+
+  # -------------------------------------------------------------------------
+  # Script d'initialisation Sentinel
+  # -------------------------------------------------------------------------
+  init-sentinel.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    SENTINEL_CONF="/etc/redis/sentinel.conf"
+    RUNTIME_CONF="/data/sentinel-runtime.conf"
+
+    echo "[SENTINEL] Initialisation de Sentinel..."
+
+    # Copier la config de base
+    cp "$SENTINEL_CONF" "$RUNTIME_CONF"
+
+    # Injecter le mot de passe du master
+    echo "sentinel auth-pass mymaster ${REDIS_PASSWORD}" >> "$RUNTIME_CONF"
+
+    # Verifier la connectivite au master initial
+    MASTER_HOST="redis-0.redis-headless.production.svc.cluster.local"
+    echo "[SENTINEL] Verification de la connectivite vers $MASTER_HOST..."
+
+    RETRIES=30
+    until redis-cli -h "$MASTER_HOST" -p 6379 -a "${REDIS_PASSWORD}" ping 2>/dev/null | grep -q PONG || [ $RETRIES -eq 0 ]; do
+      echo "[SENTINEL] Attente du master ($RETRIES retries restantes)..."
+      sleep 2
+      ((RETRIES--))
+    done
+
+    if [ $RETRIES -eq 0 ]; then
+      echo "[SENTINEL] WARNING: Master non joignable, demarrage avec config par defaut"
+    else
+      echo "[SENTINEL] Master joignable, demarrage Sentinel"
+    fi
+
+    # Resoudre le master actuel (peut avoir change si failover precedent)
+    RESOLVED_IP=$(getent hosts "$MASTER_HOST" | awk '{print $1}' | head -1)
+    if [ -n "$RESOLVED_IP" ]; then
+      # Remplacer le hostname par l'IP resolue dans la config
+      sed -i "s/redis-0.redis-headless.production.svc.cluster.local/$RESOLVED_IP/g" "$RUNTIME_CONF"
+    fi
+
+    echo "[SENTINEL] Demarrage Redis Sentinel..."
+    exec redis-sentinel "$RUNTIME_CONF"

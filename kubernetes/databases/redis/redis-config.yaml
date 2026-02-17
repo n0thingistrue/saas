@@ -1,0 +1,162 @@
+# =============================================================================
+# ConfigMap - Redis Configuration
+# =============================================================================
+# Configuration Redis 7.2 optimisee pour HA avec Sentinel :
+#   - Persistence RDB + AOF (double protection)
+#   - Maxmemory 1.5GB avec policy allkeys-lru
+#   - Replication asynchrone (performances)
+#   - Securite : requirepass, ACL, pas de commandes dangereuses
+#
+# Architecture :
+#   redis-0 : Master (Node 1 - 1 vCPU, 2GB)
+#   redis-1 : Replica (Node 1 - partage les ressources)
+#   redis-2 : Replica (Node 2 - 0.5 vCPU, 1GB)
+#   + 3 Sentinel (1 par pod, port 26379)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: production
+  labels:
+    app: redis
+    component: config
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: cache
+  annotations:
+    description: "Configuration Redis 7.2 - master + replicas avec persistence"
+data:
+  # -------------------------------------------------------------------------
+  # redis.conf - Configuration principale Redis
+  # -------------------------------------------------------------------------
+  redis.conf: |
+    # ===========================================================================
+    # Redis 7.2 Configuration - Production HA
+    # ===========================================================================
+
+    # --- Reseau ---
+    bind 0.0.0.0
+    port 6379
+    tcp-backlog 511
+    timeout 300
+    tcp-keepalive 60
+    protected-mode no
+
+    # --- General ---
+    daemonize no
+    loglevel notice
+    logfile ""
+    databases 16
+
+    # --- Securite ---
+    # Le mot de passe est injecte via variable d'environnement
+    # requirepass sera configure au demarrage via le script d'init
+
+    # Desactiver les commandes dangereuses en production
+    rename-command FLUSHALL "FLUSHALL_RESTRICTED"
+    rename-command FLUSHDB "FLUSHDB_RESTRICTED"
+    rename-command CONFIG "CONFIG_RESTRICTED"
+    rename-command DEBUG "DEBUG_RESTRICTED"
+
+    # --- Persistence RDB (Snapshots) ---
+    # Sauvegarde toutes les 900s si au moins 1 cle change
+    # Sauvegarde toutes les 300s si au moins 100 cles changent
+    # Sauvegarde toutes les 60s si au moins 10000 cles changent
+    save 900 1
+    save 300 100
+    save 60 10000
+    stop-writes-on-bgsave-error yes
+    rdbcompression yes
+    rdbchecksum yes
+    dbfilename dump.rdb
+    dir /data
+
+    # --- Persistence AOF (Append Only File) ---
+    # Double protection : RDB pour les snapshots + AOF pour chaque operation
+    appendonly yes
+    appendfilename "appendonly.aof"
+    # everysec : bon compromis performance/durabilite (perte max 1s)
+    appendfsync everysec
+    no-appendfsync-on-rewrite no
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    aof-load-truncated yes
+    aof-use-rdb-preamble yes
+
+    # --- Memoire ---
+    # 1.5GB max (80% des 2GB alloues, laisse de la marge pour le fork RDB)
+    maxmemory 1536mb
+    # allkeys-lru : evince les cles les moins recemment utilisees
+    # quand la memoire est pleine (comportement cache classique)
+    maxmemory-policy allkeys-lru
+    maxmemory-samples 10
+
+    # --- Replication ---
+    # Configure dynamiquement par Sentinel et le script d'init
+    # replica-read-only sera active sur les replicas
+    replica-serve-stale-data yes
+    replica-read-only yes
+    repl-diskless-sync yes
+    repl-diskless-sync-delay 5
+    repl-ping-replica-period 10
+    repl-timeout 60
+    repl-disable-tcp-nodelay no
+    repl-backlog-size 64mb
+    repl-backlog-ttl 3600
+
+    # --- Clients ---
+    maxclients 10000
+
+    # --- Lazy freeing ---
+    lazyfree-lazy-eviction yes
+    lazyfree-lazy-expire yes
+    lazyfree-lazy-server-del yes
+    replica-lazy-flush yes
+
+    # --- Slow Log ---
+    slowlog-log-slower-than 10000
+    slowlog-max-len 128
+
+    # --- Latency ---
+    latency-monitor-threshold 100
+
+    # --- Advanced ---
+    hz 10
+    dynamic-hz yes
+    aof-rewrite-incremental-fsync yes
+    rdb-save-incremental-fsync yes
+
+  # -------------------------------------------------------------------------
+  # Script d'initialisation Redis (determine master vs replica)
+  # -------------------------------------------------------------------------
+  init-redis.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    REDIS_CONF="/etc/redis/redis.conf"
+    RUNTIME_CONF="/data/redis-runtime.conf"
+
+    # Copier la config de base
+    cp "$REDIS_CONF" "$RUNTIME_CONF"
+
+    # Ajouter le mot de passe
+    echo "requirepass ${REDIS_PASSWORD}" >> "$RUNTIME_CONF"
+    echo "masterauth ${REDIS_PASSWORD}" >> "$RUNTIME_CONF"
+
+    # Determiner le role de ce pod
+    ORDINAL=$(echo "$HOSTNAME" | rev | cut -d'-' -f1 | rev)
+
+    if [ "$ORDINAL" = "0" ]; then
+      echo "[INIT] Ce pod est le MASTER initial (redis-0)"
+      # Le master ne configure pas de replicaof
+    else
+      echo "[INIT] Ce pod est un REPLICA (redis-$ORDINAL)"
+      # Configurer comme replica du master
+      # Sentinel prendra le relais pour la gestion du failover
+      MASTER_HOST="redis-0.redis-headless.production.svc.cluster.local"
+      echo "replicaof $MASTER_HOST 6379" >> "$RUNTIME_CONF"
+    fi
+
+    echo "[INIT] Demarrage Redis avec la configuration runtime..."
+    exec redis-server "$RUNTIME_CONF"

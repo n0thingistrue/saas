@@ -1,0 +1,137 @@
+# =============================================================================
+# CronJob - Redis RDB Backup vers S3
+# =============================================================================
+# Sauvegarde le snapshot RDB Redis vers S3 Hetzner toutes les 6 heures.
+# Le snapshot est pris via BGSAVE puis upload vers S3.
+#
+# Frequence : toutes les 6 heures (0h, 6h, 12h, 18h UTC)
+# Retention : 7 jours (geree par le lifecycle S3)
+#
+# Note : Redis effectue aussi des snapshots RDB locaux automatiquement
+# (configure dans redis.conf). Ce CronJob ajoute un backup offsite S3.
+# =============================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: redis-backup
+  namespace: backup
+  labels:
+    app: redis-backup
+    component: rdb-backup
+    app.kubernetes.io/name: redis-backup
+    app.kubernetes.io/component: rdb-backup
+    app.kubernetes.io/part-of: backup
+  annotations:
+    description: "Backup Redis RDB snapshot vers S3 toutes les 6h"
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app: redis-backup
+            component: rdb-backup
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: redis-backup
+              image: amazon/aws-cli:2.15.0
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+                  echo "[REDIS-BACKUP] $TIMESTAMP Demarrage du backup Redis..."
+
+                  REDIS_HOST="redis-master.production.svc.cluster.local"
+
+                  # Installer redis-cli
+                  yum install -y redis 2>/dev/null || apk add --no-cache redis 2>/dev/null || true
+
+                  # Forcer un BGSAVE sur le master
+                  echo "[REDIS-BACKUP] Declenchement BGSAVE..."
+                  redis-cli -h "$REDIS_HOST" -a "${REDIS_PASSWORD}" BGSAVE 2>/dev/null || {
+                    echo "[REDIS-BACKUP] WARNING: BGSAVE echoue, utilisation du dernier snapshot"
+                  }
+
+                  # Attendre que le BGSAVE soit termine
+                  echo "[REDIS-BACKUP] Attente fin BGSAVE..."
+                  RETRIES=60
+                  while [ $RETRIES -gt 0 ]; do
+                    BGSAVE_STATUS=$(redis-cli -h "$REDIS_HOST" -a "${REDIS_PASSWORD}" LASTSAVE 2>/dev/null || echo "0")
+                    sleep 2
+                    NEW_STATUS=$(redis-cli -h "$REDIS_HOST" -a "${REDIS_PASSWORD}" LASTSAVE 2>/dev/null || echo "0")
+                    if [ "$BGSAVE_STATUS" != "$NEW_STATUS" ] || [ $RETRIES -lt 55 ]; then
+                      break
+                    fi
+                    ((RETRIES--))
+                  done
+
+                  # Recuperer le dump RDB depuis le master via SYNC (alternative)
+                  # On utilise redis-cli --rdb pour telecharger le snapshot
+                  DUMP_FILE="/tmp/redis-dump-${TIMESTAMP}.rdb"
+                  echo "[REDIS-BACKUP] Telechargement du dump RDB..."
+                  redis-cli -h "$REDIS_HOST" -a "${REDIS_PASSWORD}" --rdb "$DUMP_FILE" 2>/dev/null || {
+                    echo "[REDIS-BACKUP] ERREUR: Impossible de telecharger le dump RDB"
+                    exit 1
+                  }
+
+                  DUMP_SIZE=$(du -sh "$DUMP_FILE" | cut -f1)
+                  echo "[REDIS-BACKUP] Dump RDB: $DUMP_FILE ($DUMP_SIZE)"
+
+                  # Upload vers S3
+                  echo "[REDIS-BACKUP] Upload vers S3..."
+                  export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+                  export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
+
+                  aws s3 cp "$DUMP_FILE" \
+                    "s3://${S3_BUCKET}/redis/snapshots/redis-dump-${TIMESTAMP}.rdb" \
+                    --endpoint-url "${AWS_ENDPOINT}" \
+                    --region fsn1
+
+                  # Nettoyage local
+                  rm -f "$DUMP_FILE"
+
+                  echo "[REDIS-BACKUP] $(date '+%Y-%m-%d %H:%M:%S') Backup termine"
+                  echo "[REDIS-BACKUP] Destination: s3://${S3_BUCKET}/redis/snapshots/redis-dump-${TIMESTAMP}.rdb"
+              env:
+                - name: REDIS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-credentials
+                      key: REDIS_PASSWORD
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: AWS_ENDPOINT
+                - name: S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: S3_BUCKET
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi

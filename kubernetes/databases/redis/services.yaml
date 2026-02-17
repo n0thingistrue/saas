@@ -1,0 +1,133 @@
+# =============================================================================
+# Services Redis
+# =============================================================================
+# 3 services pour differents patterns d'acces :
+#
+# 1. redis-headless : Service headless pour le StatefulSet
+# 2. redis-master : Pointe vers le master Redis (ecritures)
+# 3. redis-replica : Load balance sur les replicas (lectures)
+# 4. redis-sentinel : Service pour la decouverte Sentinel
+#
+# Les clients doivent utiliser Sentinel pour decouvrir le master :
+#   1. Se connecter a redis-sentinel:26379
+#   2. Demander : SENTINEL get-master-addr-by-name mymaster
+#   3. Se connecter au master retourne
+#
+# Alternativement, utiliser redis-master:6379 (mis a jour par Sentinel).
+# =============================================================================
+---
+# Service headless (requis par StatefulSet)
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  namespace: production
+  labels:
+    app: redis
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: headless-service
+    app.kubernetes.io/part-of: cache
+  annotations:
+    description: "Service headless pour StatefulSet Redis et communication Sentinel"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP
+    - name: sentinel
+      port: 26379
+      targetPort: 26379
+      protocol: TCP
+    - name: metrics
+      port: 9121
+      targetPort: 9121
+      protocol: TCP
+  selector:
+    app: redis
+---
+# Service Master (Read-Write)
+# Le backend se connecte ici pour les ecritures et lectures critiques
+# URL : redis://:password@redis-master.production.svc:6379
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-master
+  namespace: production
+  labels:
+    app: redis
+    role: master
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: master-service
+    app.kubernetes.io/part-of: cache
+  annotations:
+    description: "Service Redis Master - ecritures et lectures critiques"
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP
+  selector:
+    app: redis
+    # Note : Contrairement a Patroni qui met a jour les labels dynamiquement,
+    # Redis Sentinel ne modifie pas les labels K8s.
+    # On pointe vers redis-0 par defaut.
+    # Pour un routage dynamique, le client doit interroger Sentinel.
+    statefulset.kubernetes.io/pod-name: redis-0
+---
+# Service Replica (Read-Only)
+# Pour les lectures non-critiques, distribue sur les replicas
+# URL : redis://:password@redis-replica.production.svc:6379
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-replica
+  namespace: production
+  labels:
+    app: redis
+    role: replica
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: replica-service
+    app.kubernetes.io/part-of: cache
+  annotations:
+    description: "Service Redis Replica - lectures non-critiques (load balanced)"
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP
+  selector:
+    app: redis
+---
+# Service Sentinel (discovery)
+# Les clients Sentinel-aware se connectent ici pour decouvrir le master
+# Port : 26379
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: production
+  labels:
+    app: redis
+    component: sentinel
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: sentinel-service
+    app.kubernetes.io/part-of: cache
+  annotations:
+    description: "Service Redis Sentinel - decouverte du master actuel"
+spec:
+  type: ClusterIP
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: 26379
+      protocol: TCP
+  selector:
+    app: redis

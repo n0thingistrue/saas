@@ -1,0 +1,162 @@
+# =============================================================================
+# PodMonitor - PostgreSQL Metriques
+# =============================================================================
+# Configure Prometheus pour scraper les metriques de :
+#   - postgres_exporter (sidecar) : metriques PostgreSQL (connexions, queries, etc.)
+#   - Patroni REST API : etat du cluster, role, replication lag
+#
+# Metriques cles a surveiller :
+#   - pg_stat_activity_count : connexions actives
+#   - pg_stat_replication_lag : lag de replication (secondes)
+#   - pg_stat_database_tup_fetched : lignes lues
+#   - pg_stat_database_xact_commit : transactions commitees
+#   - pg_stat_database_deadlocks : deadlocks detectes
+#   - patroni_running : etat Patroni (1 = running)
+#   - patroni_master : est-ce le primary (1 = oui)
+# =============================================================================
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: postgresql
+  namespace: monitoring
+  labels:
+    app: postgresql
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: monitoring-stack
+  annotations:
+    description: "Scraping metriques PostgreSQL et Patroni"
+spec:
+  namespaceSelector:
+    matchNames:
+      - production
+  selector:
+    matchLabels:
+      app: postgresql
+      cluster-name: postgresql-ha
+  podMetricsEndpoints:
+    # Metriques postgres_exporter (sidecar)
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_pod_label_role]
+          targetLabel: pg_role
+    # Metriques Patroni REST API
+    - port: patroni
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+---
+# =============================================================================
+# PrometheusRule - Alertes PostgreSQL
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: postgresql-alerts
+  namespace: monitoring
+  labels:
+    app: postgresql
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/part-of: monitoring-stack
+    prometheus: kube-prometheus
+spec:
+  groups:
+    - name: postgresql.rules
+      rules:
+        # CRITIQUE : PostgreSQL primary down
+        - alert: PostgresqlPrimaryDown
+          expr: pg_up{pod=~"postgresql-.*"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: postgresql
+          annotations:
+            summary: "PostgreSQL instance down ({{ $labels.pod }})"
+            description: "L'instance PostgreSQL {{ $labels.pod }} est indisponible depuis plus d'1 minute."
+
+        # CRITIQUE : Pas de primary dans le cluster Patroni
+        - alert: PostgresqlNoPrimary
+          expr: count(patroni_master{cluster="postgresql-ha"} == 1) == 0
+          for: 30s
+          labels:
+            severity: critical
+            service: postgresql
+          annotations:
+            summary: "Aucun primary PostgreSQL dans le cluster"
+            description: "Le cluster Patroni n'a aucun leader. Failover en cours ou echec."
+
+        # WARNING : Lag de replication eleve
+        - alert: PostgresqlReplicationLag
+          expr: pg_replication_lag > 30
+          for: 2m
+          labels:
+            severity: warning
+            service: postgresql
+          annotations:
+            summary: "Lag de replication PostgreSQL eleve ({{ $value }}s)"
+            description: "Le lag de replication sur {{ $labels.pod }} depasse 30 secondes."
+
+        # CRITIQUE : Lag de replication critique (risque perte donnees)
+        - alert: PostgresqlReplicationLagCritical
+          expr: pg_replication_lag > 300
+          for: 1m
+          labels:
+            severity: critical
+            service: postgresql
+          annotations:
+            summary: "Lag de replication CRITIQUE ({{ $value }}s)"
+            description: "Risque de perte de donnees. Le RPO de 15 minutes est menace."
+
+        # WARNING : Trop de connexions
+        - alert: PostgresqlTooManyConnections
+          expr: sum(pg_stat_activity_count) > 160
+          for: 5m
+          labels:
+            severity: warning
+            service: postgresql
+          annotations:
+            summary: "PostgreSQL connexions elevees ({{ $value }}/200)"
+            description: "Plus de 80% des connexions max sont utilisees."
+
+        # WARNING : Deadlocks detectes
+        - alert: PostgresqlDeadlocks
+          expr: increase(pg_stat_database_deadlocks[5m]) > 5
+          for: 0m
+          labels:
+            severity: warning
+            service: postgresql
+          annotations:
+            summary: "Deadlocks PostgreSQL detectes ({{ $value }})"
+            description: "Plus de 5 deadlocks en 5 minutes sur {{ $labels.datname }}."
+
+        # WARNING : Espace disque
+        - alert: PostgresqlDiskSpaceRunningOut
+          expr: (pg_database_size_bytes / (50 * 1024 * 1024 * 1024)) * 100 > 85
+          for: 10m
+          labels:
+            severity: warning
+            service: postgresql
+          annotations:
+            summary: "Espace disque PostgreSQL > 85%"
+            description: "La base {{ $labels.datname }} utilise {{ $value }}% de l'espace disque."
+
+        # WARNING : Requetes lentes
+        - alert: PostgresqlSlowQueries
+          expr: pg_stat_activity_max_tx_duration{datname!~"template.*"} > 300
+          for: 2m
+          labels:
+            severity: warning
+            service: postgresql
+          annotations:
+            summary: "Requete PostgreSQL lente (> 5min)"
+            description: "Transaction ouverte depuis {{ $value }}s sur {{ $labels.datname }}."

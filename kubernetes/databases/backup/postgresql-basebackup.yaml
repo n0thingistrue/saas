@@ -1,0 +1,120 @@
+# =============================================================================
+# CronJob - PostgreSQL Full Base Backup (nightly)
+# =============================================================================
+# Cree un full backup PostgreSQL via WAL-G chaque nuit a 02h00 UTC.
+# Ce backup permet le PITR (Point-In-Time Recovery) en combinaison
+# avec les WAL archives.
+#
+# Frequence : quotidien a 02h00 UTC
+# Retention : geree par WAL-G (30 jours par defaut)
+#
+# Le backup est pris depuis le primary via pg_basebackup
+# encapsule dans WAL-G pour la compression et l'upload vers S3.
+# =============================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgresql-basebackup
+  namespace: backup
+  labels:
+    app: postgresql-backup
+    component: basebackup
+    app.kubernetes.io/name: postgresql-backup
+    app.kubernetes.io/component: basebackup
+    app.kubernetes.io/part-of: backup
+  annotations:
+    description: "Full backup PostgreSQL nightly vers S3 avec WAL-G"
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app: postgresql-backup
+            component: basebackup
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: basebackup
+              image: bitnami/postgresql:16
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  START_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+                  echo "[BASEBACKUP] $START_TIME Demarrage du full backup..."
+
+                  export WALG_S3_PREFIX="${WALG_S3_PREFIX}"
+                  export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+                  export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
+                  export AWS_ENDPOINT="${AWS_ENDPOINT}"
+                  export AWS_S3_FORCE_PATH_STYLE="true"
+                  export AWS_REGION="fsn1"
+                  export WALG_COMPRESSION_METHOD="lz4"
+                  export PGHOST="postgresql-primary.production.svc.cluster.local"
+                  export PGUSER="postgres"
+                  export PGPASSWORD="${POSTGRES_PASSWORD}"
+
+                  # Verifier la connectivite au primary
+                  echo "[BASEBACKUP] Verification de la connectivite..."
+                  pg_isready -h "$PGHOST" -U "$PGUSER" || {
+                    echo "[BASEBACKUP] ERREUR: Primary non accessible"
+                    exit 1
+                  }
+
+                  # Lancer le backup
+                  echo "[BASEBACKUP] Lancement de wal-g backup-push..."
+                  wal-g backup-push "$PGHOST" --full
+
+                  # Verifier le backup
+                  echo "[BASEBACKUP] Verification du backup..."
+                  wal-g backup-list
+
+                  # Nettoyage des anciens backups (garder 30 jours)
+                  echo "[BASEBACKUP] Nettoyage des backups > 30 jours..."
+                  wal-g delete retain FULL 30 --confirm || true
+
+                  END_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+                  echo "[BASEBACKUP] $END_TIME Backup termine avec succes"
+                  echo "[BASEBACKUP] Duree: $START_TIME -> $END_TIME"
+              env:
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgresql-credentials
+                      key: POSTGRES_PASSWORD
+                - name: WALG_S3_PREFIX
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: WALG_S3_PREFIX
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: AWS_ENDPOINT
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: "1Gi"

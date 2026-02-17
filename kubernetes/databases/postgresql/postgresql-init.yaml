@@ -1,0 +1,186 @@
+# =============================================================================
+# ConfigMap - PostgreSQL Init Scripts
+# =============================================================================
+# Scripts d'initialisation executes une seule fois lors du bootstrap
+# du cluster Patroni (premier demarrage du primary).
+#
+# Ces scripts creent :
+#   - La base applicative (saas_production)
+#   - L'utilisateur applicatif (saas_app) avec privileges restreints
+#   - L'utilisateur replication (replicator)
+#   - Les extensions necessaires (pg_stat_statements, uuid-ossp, pgcrypto)
+#   - Le schema applicatif initial
+#   - Les roles RBAC PostgreSQL
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-init
+  namespace: production
+  labels:
+    app: postgresql
+    component: init
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: init-scripts
+    app.kubernetes.io/part-of: database
+  annotations:
+    description: "Scripts d'initialisation PostgreSQL - users, databases, extensions"
+data:
+  # -------------------------------------------------------------------------
+  # Script principal d'initialisation
+  # -------------------------------------------------------------------------
+  init-db.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    echo "[INIT] Initialisation de la base de donnees PostgreSQL..."
+
+    # Attendre que PostgreSQL accepte les connexions
+    until pg_isready -h localhost -p 5432 -U postgres; do
+      echo "[INIT] Attente de PostgreSQL..."
+      sleep 2
+    done
+
+    echo "[INIT] PostgreSQL est pret, execution des scripts d'init..."
+
+    # Executer les scripts SQL dans l'ordre
+    psql -v ON_ERROR_STOP=1 --username postgres <<-EOSQL
+
+      -- =====================================================================
+      -- 1. Utilisateurs et roles
+      -- =====================================================================
+
+      -- Utilisateur de replication (utilise par Patroni pour le streaming)
+      DO \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'replicator') THEN
+          CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD '${POSTGRES_REPLICATION_PASSWORD}';
+          RAISE NOTICE 'Role replicator cree';
+        END IF;
+      END
+      \$\$;
+
+      -- Utilisateur applicatif (utilise par le backend NestJS)
+      DO \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'saas_app') THEN
+          CREATE ROLE saas_app WITH LOGIN PASSWORD '${POSTGRES_APP_PASSWORD}';
+          RAISE NOTICE 'Role saas_app cree';
+        END IF;
+      END
+      \$\$;
+
+      -- Role lecture seule (pour monitoring, rapports)
+      DO \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'saas_readonly') THEN
+          CREATE ROLE saas_readonly WITH LOGIN PASSWORD '${POSTGRES_READONLY_PASSWORD}';
+          RAISE NOTICE 'Role saas_readonly cree';
+        END IF;
+      END
+      \$\$;
+
+      -- =====================================================================
+      -- 2. Base de donnees applicative
+      -- =====================================================================
+      SELECT 'CREATE DATABASE saas_production OWNER saas_app'
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'saas_production')\gexec
+
+      -- =====================================================================
+      -- 3. Connexion a la base applicative pour les extensions et schema
+      -- =====================================================================
+      \connect saas_production
+
+      -- Extensions
+      CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+      CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+      CREATE EXTENSION IF NOT EXISTS "pg_stat_statements";
+      CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+
+      -- =====================================================================
+      -- 4. Schema applicatif
+      -- =====================================================================
+      CREATE SCHEMA IF NOT EXISTS app AUTHORIZATION saas_app;
+
+      -- Privileges pour l'utilisateur applicatif
+      GRANT ALL PRIVILEGES ON DATABASE saas_production TO saas_app;
+      GRANT ALL ON SCHEMA app TO saas_app;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT ALL ON TABLES TO saas_app;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT ALL ON SEQUENCES TO saas_app;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT ALL ON FUNCTIONS TO saas_app;
+
+      -- Privileges lecture seule
+      GRANT CONNECT ON DATABASE saas_production TO saas_readonly;
+      GRANT USAGE ON SCHEMA app TO saas_readonly;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO saas_readonly;
+
+      -- Search path par defaut
+      ALTER DATABASE saas_production SET search_path TO app, public;
+
+      -- =====================================================================
+      -- 5. Tables systeme pour audit RGPD
+      -- =====================================================================
+
+      -- Table d'audit des acces donnees personnelles
+      CREATE TABLE IF NOT EXISTS app.audit_log (
+        id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+        timestamp TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+        user_id UUID,
+        action VARCHAR(50) NOT NULL,
+        table_name VARCHAR(100),
+        record_id UUID,
+        old_values JSONB,
+        new_values JSONB,
+        ip_address INET,
+        user_agent TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON app.audit_log (timestamp);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON app.audit_log (user_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_action ON app.audit_log (action);
+
+      -- Table de suivi des consentements RGPD
+      CREATE TABLE IF NOT EXISTS app.gdpr_consents (
+        id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+        user_id UUID NOT NULL,
+        consent_type VARCHAR(50) NOT NULL,
+        granted BOOLEAN NOT NULL DEFAULT false,
+        granted_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ,
+        ip_address INET,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_gdpr_consents_user ON app.gdpr_consents (user_id);
+
+    EOSQL
+
+    echo "[INIT] Base de donnees initialisee avec succes"
+    echo "[INIT] Base: saas_production"
+    echo "[INIT] Users: postgres, replicator, saas_app, saas_readonly"
+    echo "[INIT] Extensions: uuid-ossp, pgcrypto, pg_stat_statements, pg_trgm"
+
+  # -------------------------------------------------------------------------
+  # Script de verification post-init
+  # -------------------------------------------------------------------------
+  verify-init.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    echo "[VERIFY] Verification de l'initialisation..."
+
+    psql -U postgres -d saas_production -c "
+      SELECT
+        current_database() as database,
+        current_user as user,
+        version() as version;
+    "
+
+    echo "[VERIFY] Extensions installees:"
+    psql -U postgres -d saas_production -c "SELECT extname, extversion FROM pg_extension ORDER BY extname;"
+
+    echo "[VERIFY] Roles crees:"
+    psql -U postgres -c "SELECT rolname, rolsuper, rolreplication, rolcanlogin FROM pg_roles WHERE rolname IN ('postgres', 'replicator', 'saas_app', 'saas_readonly');"
+
+    echo "[VERIFY] Schemas:"
+    psql -U postgres -d saas_production -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast');"
+
+    echo "[VERIFY] Verification terminee"
