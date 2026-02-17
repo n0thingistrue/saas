@@ -1,0 +1,93 @@
+# =============================================================================
+# RBAC - Traefik Ingress Controller
+# =============================================================================
+# ServiceAccount, ClusterRole et ClusterRoleBinding pour Traefik.
+# Traefik a besoin d'acceder aux ressources suivantes :
+#   - Ingress, IngressClass : decouverte des routes
+#   - Services, Endpoints, EndpointSlices : resolution des backends
+#   - Secrets : lecture des certificats TLS
+#   - IngressRoute, Middleware, TLSOption (CRDs Traefik) : config avancee
+#   - Nodes : topology awareness
+# =============================================================================
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress-controller
+---
+# ClusterRole avec permissions minimales necessaires
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: traefik-ingress-controller
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+rules:
+  # --- Ressources Kubernetes natives ---
+  - apiGroups: [""]
+    resources:
+      - services
+      - endpoints
+      - pods
+      - nodes
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - secrets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - ingressclasses
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses/status
+    verbs: ["update"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources:
+      - endpointslices
+    verbs: ["get", "list", "watch"]
+
+  # --- CRDs Traefik ---
+  - apiGroups: ["traefik.io"]
+    resources:
+      - ingressroutes
+      - ingressroutetcps
+      - ingressrouteudps
+      - middlewares
+      - middlewaretcps
+      - tlsoptions
+      - tlsstores
+      - traefikservices
+      - serverstransports
+      - serverstransporttcps
+    verbs: ["get", "list", "watch"]
+
+  # --- Extensions (legacy) ---
+  - apiGroups: ["extensions", "networking.k8s.io"]
+    resources:
+      - ingresses
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: traefik-ingress-controller
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: traefik-ingress-controller
+subjects:
+  - kind: ServiceAccount
+    name: traefik
+    namespace: ingress

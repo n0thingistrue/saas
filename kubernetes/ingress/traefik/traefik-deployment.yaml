@@ -1,0 +1,180 @@
+# =============================================================================
+# Deployment - Traefik v3.0 Ingress Controller
+# =============================================================================
+# Deploie Traefik avec 2 replicas repartis sur les 2 nodes.
+# Traefik est le point d'entree unique du cluster :
+#   - Terminaison TLS (certificats cert-manager)
+#   - Routage HTTP/HTTPS vers Frontend et Backend
+#   - Middlewares (security headers, rate limiting, WAF, compression)
+#   - Metriques Prometheus
+#
+# Ports :
+#   80  (web)       : HTTP → redirect HTTPS
+#   443 (websecure) : HTTPS termination
+#   8080 (traefik)  : Dashboard + /ping health
+#   9100 (metrics)  : Prometheus scraping
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress-controller
+    app.kubernetes.io/part-of: networking
+    app.kubernetes.io/version: "3.0"
+  annotations:
+    description: "Traefik v3.0 Ingress Controller - 2 replicas HA"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: traefik
+  template:
+    metadata:
+      labels:
+        app: traefik
+        app.kubernetes.io/name: traefik
+        app.kubernetes.io/component: ingress-controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      serviceAccountName: traefik
+      terminationGracePeriodSeconds: 60
+
+      # --- Repartir sur les 2 nodes ---
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values: ["traefik"]
+              topologyKey: kubernetes.io/hostname
+
+      # --- Topology Spread ---
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: traefik
+
+      # --- Init : creer les repertoires ---
+      initContainers:
+        - name: init-dirs
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /var/log/traefik && mkdir -p /data/acme"]
+          volumeMounts:
+            - name: traefik-logs
+              mountPath: /var/log/traefik
+            - name: acme-storage
+              mountPath: /data/acme
+
+      containers:
+        - name: traefik
+          image: traefik:v3.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--configFile=/config/traefik.yaml"
+
+          ports:
+            - name: web
+              containerPort: 80
+              protocol: TCP
+            - name: websecure
+              containerPort: 443
+              protocol: TCP
+            - name: dashboard
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+
+          # --- Health Checks ---
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: dashboard
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: dashboard
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: dashboard
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+
+          # --- Resources ---
+          resources:
+            requests:
+              cpu: 400m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: "1Gi"
+
+          # --- Security ---
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+
+          # --- Volumes ---
+          volumeMounts:
+            - name: traefik-config
+              mountPath: /config
+              readOnly: true
+            - name: acme-storage
+              mountPath: /data/acme
+            - name: traefik-logs
+              mountPath: /var/log/traefik
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        # Configuration statique Traefik
+        - name: traefik-config
+          configMap:
+            name: traefik-config
+        # Stockage certificats ACME (si utilise le resolver interne)
+        - name: acme-storage
+          emptyDir:
+            sizeLimit: 100Mi
+        # Logs d'acces
+        - name: traefik-logs
+          emptyDir:
+            sizeLimit: 200Mi
+        # Temp
+        - name: tmp
+          emptyDir:
+            sizeLimit: 10Mi

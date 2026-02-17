@@ -1,0 +1,56 @@
+# =============================================================================
+# IngressRoute - Grafana Monitoring
+# =============================================================================
+# Route le trafic HTTPS vers Grafana.
+#
+# Host : monitoring.saas.local
+# Service : grafana.monitoring:3000
+#
+# Middlewares appliques :
+#   1. security-headers : headers OWASP
+#   2. compress : gzip/brotli
+#   3. rate-limit-default : 100 req/s
+#   4. ip-whitelist-admin : restreint par IP (optionnel)
+#
+# TLS : certificat gere par cert-manager (Secret monitoring-tls)
+#
+# NOTE : Ce fichier sera deploye apres la stack monitoring (Partie 8).
+# =============================================================================
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: ingress
+  annotations:
+    description: "Route HTTPS vers Grafana Monitoring"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`monitoring.saas.local`)
+      kind: Rule
+      middlewares:
+        - name: security-headers
+          namespace: ingress
+        - name: compress
+          namespace: ingress
+        - name: rate-limit-default
+          namespace: ingress
+        # Decommenter pour restreindre par IP
+        # - name: ip-whitelist-admin
+        #   namespace: ingress
+      services:
+        - name: grafana
+          namespace: monitoring
+          port: 3000
+          strategy: RoundRobin
+          passHostHeader: true
+  tls:
+    secretName: monitoring-tls
+    options:
+      name: default
+      namespace: ingress

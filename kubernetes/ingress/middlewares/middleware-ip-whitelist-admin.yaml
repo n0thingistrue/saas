@@ -1,0 +1,36 @@
+# =============================================================================
+# Middleware - IP Whitelist Admin
+# =============================================================================
+# Restreint l'acces aux endpoints d'administration par IP.
+# Applicable sur :
+#   - Dashboard Traefik (traefik.saas.local)
+#   - Grafana monitoring (monitoring.saas.local)
+#   - Tout endpoint sensible
+#
+# IMPORTANT : Adapter les IPs a votre environnement.
+# =============================================================================
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ip-whitelist-admin
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: middleware
+  annotations:
+    description: "IP Whitelist - Endpoints administration"
+spec:
+  ipAllowList:
+    sourceRange:
+      # Reseau prive Kubernetes
+      - "10.10.0.0/16"
+      - "10.42.0.0/16"
+      - "10.43.0.0/16"
+      # VPN WireGuard
+      - "10.100.0.0/24"
+      # IMPORTANT : Ajouter vos IPs d'administration ici
+      # - "203.0.113.10/32"   # IP bureau
+      # - "198.51.100.0/24"   # Plage VPN entreprise
+    ipStrategy:
+      depth: 1

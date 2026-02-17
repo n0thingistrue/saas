@@ -1,0 +1,126 @@
+# =============================================================================
+# Deployment - cert-manager Controller
+# =============================================================================
+# Controller principal cert-manager.
+# Reconcile les ressources Certificate, Issuer, ClusterIssuer.
+# Effectue les challenges ACME (HTTP-01) pour obtenir les certificats.
+#
+# Deploye sur Node 2 de preference (leger, libere Node 1).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  labels:
+    app: cert-manager
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/version: "1.14"
+  annotations:
+    description: "cert-manager controller - Gestion automatique certificats TLS"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: cert-manager
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app: cert-manager
+        app.kubernetes.io/name: cert-manager
+        app.kubernetes.io/component: controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9402"
+    spec:
+      serviceAccountName: cert-manager
+      terminationGracePeriodSeconds: 30
+
+      # Preferer Node 2 (plus leger)
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              preference:
+                matchExpressions:
+                  - key: node-size
+                    operator: In
+                    values: ["small"]
+
+      containers:
+        - name: cert-manager
+          image: quay.io/jetstack/cert-manager-controller:v1.14.5
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--v=2"
+            - "--cluster-resource-namespace=$(POD_NAMESPACE)"
+            - "--leader-election-namespace=$(POD_NAMESPACE)"
+            - "--dns01-recursive-nameservers-only"
+            - "--dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53"
+            - "--max-concurrent-challenges=10"
+            - "--enable-certificate-owner-ref=true"
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: metrics
+              containerPort: 9402
+              protocol: TCP
+
+          # --- Health Checks ---
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 9403
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9403
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # --- Resources ---
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
+
+          # --- Security ---
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 10Mi

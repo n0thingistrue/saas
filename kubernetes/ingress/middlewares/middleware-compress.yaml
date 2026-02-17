@@ -1,0 +1,45 @@
+# =============================================================================
+# Middleware - Compression
+# =============================================================================
+# Active la compression des reponses HTTP.
+# Traefik supporte gzip et brotli (si le client l'accepte).
+#
+# La compression reduit la bande passante :
+#   - HTML, CSS, JS : ~70-90% de reduction
+#   - JSON API responses : ~60-80% de reduction
+#   - Images (JPEG, PNG, WebP) : deja compressees, exclues
+#
+# Exclusions :
+#   - Types deja compresses (images, videos, archives)
+#   - Reponses < 1KB (overhead compression > gain)
+# =============================================================================
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: compress
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: middleware
+  annotations:
+    description: "Compression gzip/brotli pour les reponses HTTP"
+spec:
+  compress:
+    # Taille minimale pour compresser (eviter overhead sur petites reponses)
+    minResponseBodyBytes: 1024
+    # Types MIME a exclure (deja compresses)
+    excludedContentTypes:
+      - "image/jpeg"
+      - "image/png"
+      - "image/gif"
+      - "image/webp"
+      - "image/svg+xml"
+      - "video/mp4"
+      - "video/webm"
+      - "application/zip"
+      - "application/gzip"
+      - "application/x-tar"
+      - "application/pdf"
+      - "font/woff"
+      - "font/woff2"

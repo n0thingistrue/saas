@@ -1,0 +1,108 @@
+# =============================================================================
+# Certificate - Wildcard *.saas.local
+# =============================================================================
+# Certificat wildcard couvrant tous les sous-domaines :
+#   - app.saas.local (frontend)
+#   - api.saas.local (backend)
+#   - traefik.saas.local (dashboard)
+#   - monitoring.saas.local (grafana)
+#   - *.saas.local (futur)
+#
+# Le certificat est stocke dans le Secret wildcard-tls
+# et utilise par Traefik pour toutes les IngressRoutes.
+#
+# NOTE : Le wildcard necessite un challenge DNS-01 (pas HTTP-01).
+# Si vous utilisez HTTP-01, creez des Certificate individuels par domaine.
+#
+# Renouvellement automatique : 60 jours avant expiration.
+# Duree Let's Encrypt : 90 jours.
+# =============================================================================
+---
+# Certificat individuel Frontend (HTTP-01 compatible)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: frontend-tls
+  namespace: production
+  labels:
+    app: frontend
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: frontend-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - app.saas.local
+  # Renouveler 30 jours avant expiration
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+---
+# Certificat individuel Backend API
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: backend-tls
+  namespace: production
+  labels:
+    app: backend
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: backend-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - api.saas.local
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+---
+# Certificat Dashboard Traefik
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: traefik-tls
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: traefik-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - traefik.saas.local
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+---
+# Certificat Grafana / Monitoring
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: monitoring-tls
+  namespace: monitoring
+  labels:
+    app: grafana
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: monitoring-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - monitoring.saas.local
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256

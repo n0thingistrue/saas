@@ -1,0 +1,49 @@
+# =============================================================================
+# ClusterIssuer - Let's Encrypt Production
+# =============================================================================
+# ClusterIssuer pour obtenir des certificats TLS valides via Let's Encrypt.
+# Utilise le challenge HTTP-01 via Traefik.
+#
+# HTTP-01 workflow :
+#   1. cert-manager cree un pod solver temporaire
+#   2. Le solver repond au challenge ACME sur /.well-known/acme-challenge/
+#   3. Let's Encrypt verifie le challenge via HTTP
+#   4. cert-manager stocke le certificat dans un Secret Kubernetes
+#   5. Traefik utilise le Secret pour servir le TLS
+#
+# Rate limits Let's Encrypt prod :
+#   - 50 certificats par domaine enregistre / semaine
+#   - 5 duplicatas / semaine
+#   - 300 nouvelles commandes / 3 heures
+#
+# IMPORTANT : Tester d'abord avec le ClusterIssuer staging !
+# =============================================================================
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app: cert-manager
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: issuer
+  annotations:
+    description: "Let's Encrypt Production - Certificats TLS valides"
+spec:
+  acme:
+    # Serveur ACME Let's Encrypt Production
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # Email pour les notifications d'expiration
+    # IMPORTANT : Remplacer par votre email reel
+    email: admin@saas.local
+    # Secret pour stocker la cle privee du compte ACME
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    # Solver HTTP-01 via Traefik
+    solvers:
+      - http01:
+          ingress:
+            ingressTemplate:
+              metadata:
+                annotations:
+                  # Force le routage via Traefik
+                  kubernetes.io/ingress.class: traefik

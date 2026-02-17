@@ -1,0 +1,144 @@
+# =============================================================================
+# ServiceMonitor + Alertes - Traefik Ingress
+# =============================================================================
+# Monitoring Traefik via Prometheus.
+# Metriques exposees sur port 9100.
+#
+# Alertes :
+#   - TraefikDown : aucun pod Traefik disponible (critique)
+#   - TraefikHighErrorRate : taux d'erreurs 5xx > 5% (critique)
+#   - TraefikCertExpiringSoon : certificat TLS expire dans < 7 jours
+#   - TraefikHighLatency : p95 latence > 2s (warning)
+#   - TraefikTLSHandshakeErrors : erreurs TLS frequentes
+#   - TraefikOpenConnections : trop de connexions ouvertes
+# =============================================================================
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: traefik-monitor
+  namespace: monitoring
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/part-of: monitoring-stack
+    prometheus: kube-prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - ingress
+  selector:
+    matchLabels:
+      app: traefik
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: traefik-alerts
+  namespace: monitoring
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/part-of: monitoring-stack
+    prometheus: kube-prometheus
+spec:
+  groups:
+    - name: traefik.rules
+      rules:
+        # CRITIQUE : Aucun pod Traefik disponible
+        - alert: TraefikDown
+          expr: |
+            absent(up{job=~"traefik.*", namespace="ingress"} == 1)
+            or count(up{job=~"traefik.*", namespace="ingress"} == 1) == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: traefik
+          annotations:
+            summary: "Traefik Ingress est DOWN"
+            description: "Aucun pod Traefik ne repond. Tout le trafic entrant est bloque."
+
+        # CRITIQUE : Taux d'erreurs HTTP 5xx > 5%
+        - alert: TraefikHighErrorRate
+          expr: |
+            (
+              sum(rate(traefik_service_requests_total{code=~"5.."}[5m]))
+              /
+              sum(rate(traefik_service_requests_total[5m]))
+            ) * 100 > 5
+          for: 2m
+          labels:
+            severity: critical
+            service: traefik
+          annotations:
+            summary: "Traefik taux erreurs 5xx > 5% ({{ $value | humanize }}%)"
+            description: "Le taux d'erreurs backend est eleve. Verifier les services cibles."
+
+        # WARNING : Certificat TLS expire dans < 7 jours
+        - alert: TraefikCertExpiringSoon
+          expr: |
+            (traefik_tls_certs_not_after - time()) / 86400 < 7
+          for: 1h
+          labels:
+            severity: warning
+            service: traefik
+          annotations:
+            summary: "Certificat TLS expire dans {{ $value | humanize }} jours"
+            description: "Un certificat TLS expire bientot. Verifier cert-manager et le renouvellement ACME."
+
+        # WARNING : Latence p95 > 2s
+        - alert: TraefikHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(traefik_service_request_duration_seconds_bucket[5m])) by (le, service)
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+            service: traefik
+          annotations:
+            summary: "Traefik latence p95 > 2s pour {{ $labels.service }}"
+            description: "La latence est elevee sur un service backend. Verifier la sante du service."
+
+        # WARNING : Erreurs TLS handshake frequentes
+        - alert: TraefikTLSHandshakeErrors
+          expr: |
+            rate(traefik_tls_certs_not_after_timestamp_seconds[5m]) > 0
+            and
+            increase(traefik_entrypoint_requests_tls_total{tls_version=""}[5m]) > 10
+          for: 5m
+          labels:
+            severity: warning
+            service: traefik
+          annotations:
+            summary: "Erreurs TLS handshake frequentes"
+            description: "Des clients echouent le handshake TLS. Verifier la configuration TLS 1.3."
+
+        # WARNING : Trop de connexions ouvertes
+        - alert: TraefikOpenConnections
+          expr: |
+            sum(traefik_entrypoint_open_connections) > 1000
+          for: 5m
+          labels:
+            severity: warning
+            service: traefik
+          annotations:
+            summary: "Traefik > 1000 connexions ouvertes ({{ $value }})"
+            description: "Nombre eleve de connexions ouvertes. Possible DDoS ou fuite de connexions."
+
+        # INFO : Traefik pod restarted
+        - alert: TraefikRestarted
+          expr: increase(kube_pod_container_status_restarts_total{namespace="ingress", container="traefik"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: info
+            service: traefik
+          annotations:
+            summary: "Traefik pod a redemarré"
+            description: "Un pod Traefik a ete redemarré. Verifier les logs."

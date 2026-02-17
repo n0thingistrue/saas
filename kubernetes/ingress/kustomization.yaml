@@ -1,0 +1,70 @@
+# =============================================================================
+# Kustomization - Ingress Stack
+# =============================================================================
+# Orchestration du deploiement de la stack Ingress.
+# Ordre de deploiement :
+#   1. Namespace + RBAC
+#   2. cert-manager (doit etre pret pour emettre les certs)
+#   3. Traefik configuration + TLS options
+#   4. Middlewares (security headers, rate limit, WAF)
+#   5. Traefik deployment
+#   6. Certificates (demande les certs a Let's Encrypt)
+#   7. IngressRoutes (routage vers les applications)
+#   8. NetworkPolicies
+#
+# Utilisation :
+#   kubectl apply -k kubernetes/ingress/
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # --- Namespaces ---
+  - traefik/traefik-namespace.yaml
+  - cert-manager/cert-manager-namespace.yaml
+
+  # --- cert-manager RBAC + Deployments ---
+  - cert-manager/cert-manager-rbac.yaml
+  - cert-manager/cert-manager-deployment.yaml
+  - cert-manager/cert-manager-webhook.yaml
+  - cert-manager/cert-manager-cainjector.yaml
+
+  # --- ClusterIssuers Let's Encrypt ---
+  - cert-manager/clusterissuer-letsencrypt-staging.yaml
+  - cert-manager/clusterissuer-letsencrypt-prod.yaml
+
+  # --- Traefik RBAC + Config ---
+  - traefik/traefik-rbac.yaml
+  - traefik/traefik-configmap.yaml
+  - traefik/traefik-tlsoption.yaml
+
+  # --- Middlewares ---
+  - middlewares/middleware-redirect-https.yaml
+  - middlewares/middleware-security-headers.yaml
+  - middlewares/middleware-rate-limit.yaml
+  - middlewares/middleware-compress.yaml
+  - middlewares/middleware-waf-modsecurity.yaml
+  - middlewares/middleware-ip-whitelist-admin.yaml
+
+  # --- Traefik Deployment + Service ---
+  - traefik/traefik-deployment.yaml
+  - traefik/traefik-service.yaml
+  - traefik/traefik-dashboard-ingressroute.yaml
+
+  # --- Certificates ---
+  - cert-manager/certificate-wildcard.yaml
+
+  # --- IngressRoutes ---
+  - routes/ingressroute-frontend.yaml
+  - routes/ingressroute-backend.yaml
+  - routes/ingressroute-grafana.yaml
+
+  # --- NetworkPolicies ---
+  - networkpolicy-ingress-to-apps.yaml
+
+  # --- Monitoring ---
+  - traefik/traefik-servicemonitor.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: networking
+  app.kubernetes.io/managed-by: kustomize

@@ -1,0 +1,83 @@
+# =============================================================================
+# IngressRoute - Dashboard Traefik
+# =============================================================================
+# Expose le dashboard Traefik via HTTPS avec authentification BasicAuth.
+# Accessible uniquement sur traefik.saas.local.
+#
+# Securite :
+#   - BasicAuth obligatoire (htpasswd dans un Secret)
+#   - HTTPS only (TLS via cert-manager)
+#   - Security headers
+#   - IP whitelist optionnel (decommentez si souhaite)
+#
+# Generer le secret htpasswd :
+#   htpasswd -nb admin 'MotDePasseForT!' | base64
+#   kubectl create secret generic traefik-dashboard-auth \
+#     --namespace ingress \
+#     --from-literal=users='admin:$2y$05$...' \
+#     --dry-run=client -o yaml | kubeseal --format yaml
+# =============================================================================
+---
+# Secret BasicAuth pour le dashboard
+# IMPORTANT : Remplacer par un SealedSecret en production
+apiVersion: v1
+kind: Secret
+metadata:
+  name: traefik-dashboard-auth
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: dashboard
+type: Opaque
+stringData:
+  # Format htpasswd : admin:$apr1$... (generer avec htpasswd -nb admin password)
+  # CHANGER CE MOT DE PASSE EN PRODUCTION
+  users: "admin:$apr1$CHANGE_ME$CHANGE_ME_HASH"
+---
+# Middleware BasicAuth pour le dashboard
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dashboard-auth
+  namespace: ingress
+  labels:
+    app: traefik
+spec:
+  basicAuth:
+    secret: traefik-dashboard-auth
+    removeHeader: true
+---
+# IngressRoute vers le dashboard
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: traefik-dashboard
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: dashboard
+  annotations:
+    description: "Dashboard Traefik - BasicAuth + TLS"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`traefik.saas.local`)
+      kind: Rule
+      middlewares:
+        - name: dashboard-auth
+          namespace: ingress
+        - name: security-headers
+          namespace: ingress
+        # Decommenter pour restreindre par IP
+        # - name: ip-whitelist-admin
+        #   namespace: ingress
+      services:
+        - name: api@internal
+          kind: TraefikService
+  tls:
+    certResolver: letsencrypt
+    domains:
+      - main: traefik.saas.local

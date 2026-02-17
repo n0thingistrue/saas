@@ -1,0 +1,131 @@
+# =============================================================================
+# NetworkPolicy - Ingress vers Applications
+# =============================================================================
+# Autorise le trafic depuis le namespace ingress (Traefik)
+# vers les applications dans le namespace production.
+#
+# Flux autorises :
+#   Traefik (ingress) → Frontend (production:3001)
+#   Traefik (ingress) → Backend (production:3000)
+#
+# Tout autre trafic entrant dans production est bloque
+# par la policy default-deny-all (base/network-policies).
+# =============================================================================
+---
+# Autorise Traefik → Frontend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: production
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Depuis le namespace ingress (Traefik)
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+          podSelector:
+            matchLabels:
+              app: traefik
+      ports:
+        - port: 3001
+          protocol: TCP
+---
+# Autorise Traefik → Backend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-backend
+  namespace: production
+  labels:
+    app: backend
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Depuis le namespace ingress (Traefik)
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+          podSelector:
+            matchLabels:
+              app: traefik
+      ports:
+        - port: 3000
+          protocol: TCP
+---
+# Autorise Traefik → ModSecurity (WAF dans le namespace ingress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-traefik-to-modsecurity
+  namespace: ingress
+  labels:
+    app: modsecurity
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: modsecurity
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: traefik
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Autorise cert-manager HTTP-01 solver (temporaire pendant challenges ACME)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-acme-solver
+  namespace: ingress
+  labels:
+    app: cert-manager
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: traefik
+  policyTypes:
+    - Egress
+  egress:
+    # Traefik doit pouvoir joindre les pods solver cert-manager
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: cert-manager
+      ports:
+        - port: 8089
+          protocol: TCP
+    # Let's Encrypt ACME (Internet)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP

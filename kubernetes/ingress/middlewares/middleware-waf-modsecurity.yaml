@@ -1,0 +1,227 @@
+# =============================================================================
+# WAF ModSecurity - Web Application Firewall
+# =============================================================================
+# Protection WAF via ModSecurity avec OWASP Core Rule Set (CRS) 4.0.
+#
+# Architecture :
+#   Traefik → ModSecurity (sidecar/pod) → Backend
+#   Traefik utilise le plugin forwardAuth pour envoyer les requetes
+#   a ModSecurity qui les analyse avant de les transmettre.
+#
+# Configuration :
+#   - OWASP CRS 4.0
+#   - Paranoia Level 2 (bon equilibre securite/faux positifs)
+#   - Mode : Block (pas detection-only en production)
+#   - Anomaly Scoring : inbound threshold 5, outbound threshold 4
+#
+# Le pod ModSecurity est deploye dans le namespace ingress.
+# =============================================================================
+---
+# ConfigMap : configuration ModSecurity + OWASP CRS
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: modsecurity-config
+  namespace: ingress
+  labels:
+    app: modsecurity
+    app.kubernetes.io/name: modsecurity
+    app.kubernetes.io/component: waf
+data:
+  modsecurity.conf: |
+    # Activer ModSecurity
+    SecRuleEngine On
+
+    # Mode : block (On) ou detection-only (DetectionOnly)
+    # En production : On (block mode)
+    SecRuleEngine On
+
+    # Audit log
+    SecAuditEngine RelevantOnly
+    SecAuditLogRelevantStatus "^(?:5|4(?:0[1235]|29))"
+    SecAuditLog /var/log/modsecurity/audit.log
+    SecAuditLogFormat JSON
+    SecAuditLogType Serial
+
+    # Limites de requete
+    SecRequestBodyLimit 13107200
+    SecRequestBodyNoFilesLimit 131072
+    SecRequestBodyAccess On
+    SecResponseBodyAccess Off
+
+    # Temp files
+    SecTmpDir /tmp/modsecurity
+    SecDataDir /tmp/modsecurity
+
+    # Unicode mapping
+    SecUnicodeMapFile /etc/modsecurity/unicode.mapping 20127
+
+  crs-setup.conf: |
+    # OWASP CRS 4.0 Configuration
+    # Paranoia Level 2 : bon equilibre securite/performance
+    SecAction "id:900000, phase:1, pass, t:none, nolog, \
+      setvar:tx.blocking_paranoia_level=2, \
+      setvar:tx.detection_paranoia_level=2"
+
+    # Anomaly Scoring Thresholds
+    SecAction "id:900110, phase:1, pass, t:none, nolog, \
+      setvar:tx.inbound_anomaly_score_threshold=5, \
+      setvar:tx.outbound_anomaly_score_threshold=4"
+
+    # Enforcement mode (block)
+    SecAction "id:900120, phase:1, pass, t:none, nolog, \
+      setvar:tx.enforce_bodyproc_urlencoded=1"
+
+    # Exclusions pour les API JSON (eviter faux positifs)
+    SecAction "id:900130, phase:1, pass, t:none, nolog, \
+      setvar:tx.allowed_request_content_type=|application/x-www-form-urlencoded| \
+      |multipart/form-data| |multipart/related| |text/xml| \
+      |application/xml| |application/soap+xml| |application/json| \
+      |application/cloudevents+json| |application/cloudevents-batch+json|"
+
+    # Methodes HTTP autorisees
+    SecAction "id:900200, phase:1, pass, t:none, nolog, \
+      setvar:'tx.allowed_methods=GET HEAD POST OPTIONS PUT PATCH DELETE'"
+
+    # Activer les reponses custom pour les blocs
+    SecAction "id:900300, phase:1, pass, t:none, nolog, \
+      setvar:tx.anomaly_score=0"
+---
+# Deployment ModSecurity
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: modsecurity
+  namespace: ingress
+  labels:
+    app: modsecurity
+    app.kubernetes.io/name: modsecurity
+    app.kubernetes.io/component: waf
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: modsecurity
+  template:
+    metadata:
+      labels:
+        app: modsecurity
+        app.kubernetes.io/name: modsecurity
+        app.kubernetes.io/component: waf
+    spec:
+      # Repartir avec Traefik
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 80
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["modsecurity"]
+                topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: modsecurity
+          # Image officielle ModSecurity + OWASP CRS
+          image: owasp/modsecurity-crs:4.0-nginx-202401
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: BACKEND
+              value: "http://localhost"
+            - name: PORT
+              value: "8080"
+            - name: MODSEC_RULE_ENGINE
+              value: "On"
+            - name: BLOCKING_PARANOIA
+              value: "2"
+            - name: ANOMALY_INBOUND
+              value: "5"
+            - name: ANOMALY_OUTBOUND
+              value: "4"
+
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          volumeMounts:
+            - name: modsecurity-config
+              mountPath: /etc/modsecurity/modsecurity.conf
+              subPath: modsecurity.conf
+            - name: modsecurity-config
+              mountPath: /etc/modsecurity/crs-setup.conf
+              subPath: crs-setup.conf
+            - name: modsecurity-logs
+              mountPath: /var/log/modsecurity
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: modsecurity-config
+          configMap:
+            name: modsecurity-config
+        - name: modsecurity-logs
+          emptyDir:
+            sizeLimit: 200Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 50Mi
+---
+# Service ModSecurity
+apiVersion: v1
+kind: Service
+metadata:
+  name: modsecurity
+  namespace: ingress
+  labels:
+    app: modsecurity
+spec:
+  type: ClusterIP
+  selector:
+    app: modsecurity
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# Middleware ForwardAuth : Traefik envoie les requetes a ModSecurity
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: waf-modsecurity
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: middleware
+  annotations:
+    description: "WAF ModSecurity OWASP CRS 4.0 - Paranoia Level 2 - Block mode"
+spec:
+  forwardAuth:
+    address: "http://modsecurity.ingress.svc.cluster.local:8080"
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-ModSecurity-Action
+      - X-ModSecurity-Score

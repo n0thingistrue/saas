@@ -1,0 +1,79 @@
+# =============================================================================
+# Deployment - cert-manager CA Injector
+# =============================================================================
+# Le cainjector surveille les ressources annotees avec
+# cert-manager.io/inject-ca-from et injecte le CA bundle
+# dans les webhooks, CRDs et APIServices.
+#
+# Necessaire pour que le webhook cert-manager fonctionne
+# (le API server doit faire confiance au CA du webhook).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager-cainjector
+  namespace: cert-manager
+  labels:
+    app: cert-manager
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: cainjector
+    app.kubernetes.io/version: "1.14"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: cert-manager
+      app.kubernetes.io/component: cainjector
+  template:
+    metadata:
+      labels:
+        app: cert-manager
+        app.kubernetes.io/name: cert-manager
+        app.kubernetes.io/component: cainjector
+    spec:
+      serviceAccountName: cert-manager-cainjector
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: cainjector
+          image: quay.io/jetstack/cert-manager-cainjector:v1.14.5
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--v=2"
+            - "--leader-election-namespace=$(POD_NAMESPACE)"
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 10Mi

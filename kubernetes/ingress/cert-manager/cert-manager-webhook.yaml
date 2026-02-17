@@ -1,0 +1,126 @@
+# =============================================================================
+# Deployment + Service - cert-manager Webhook
+# =============================================================================
+# Le webhook cert-manager valide et mute les ressources Certificate,
+# Issuer, ClusterIssuer lors de leur creation/modification.
+# Il fournit un endpoint d'admission Kubernetes.
+#
+# Le cainjector injecte automatiquement le CA bundle dans la config
+# du ValidatingWebhookConfiguration.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager-webhook
+  namespace: cert-manager
+  labels:
+    app: cert-manager
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/version: "1.14"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: cert-manager
+      app.kubernetes.io/component: webhook
+  template:
+    metadata:
+      labels:
+        app: cert-manager
+        app.kubernetes.io/name: cert-manager
+        app.kubernetes.io/component: webhook
+    spec:
+      serviceAccountName: cert-manager-webhook
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: webhook
+          image: quay.io/jetstack/cert-manager-webhook:v1.14.5
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--v=2"
+            - "--secure-port=10250"
+            - "--dynamic-serving-ca-secret-namespace=$(POD_NAMESPACE)"
+            - "--dynamic-serving-ca-secret-name=cert-manager-webhook-ca"
+            - "--dynamic-serving-dns-names=cert-manager-webhook,cert-manager-webhook.cert-manager,cert-manager-webhook.cert-manager.svc"
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: https
+              containerPort: 10250
+              protocol: TCP
+            - name: healthcheck
+              containerPort: 6080
+              protocol: TCP
+
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 6080
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 6080
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 10Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cert-manager-webhook
+  namespace: cert-manager
+  labels:
+    app: cert-manager
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: webhook
+spec:
+  type: ClusterIP
+  selector:
+    app: cert-manager
+    app.kubernetes.io/component: webhook
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP

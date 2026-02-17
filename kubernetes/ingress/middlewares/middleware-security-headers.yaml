@@ -1,0 +1,96 @@
+# =============================================================================
+# Middleware - Security Headers
+# =============================================================================
+# Headers de securite appliques globalement sur toutes les reponses HTTPS.
+# Conforme aux recommandations OWASP et ISO 27001.
+#
+# Headers :
+#   - X-Frame-Options : DENY → empeche le clickjacking
+#   - X-Content-Type-Options : nosniff → empeche le MIME sniffing
+#   - X-XSS-Protection : 1; mode=block → protection XSS navigateur
+#   - Strict-Transport-Security : HSTS avec includeSubDomains
+#   - Content-Security-Policy : politique restrictive
+#   - Referrer-Policy : limite les informations referrer
+#   - Permissions-Policy : desactive les API dangereuses
+#   - X-Permitted-Cross-Domain-Policies : bloque Flash/PDF cross-domain
+#   - Cross-Origin-Embedder-Policy : isolation cross-origin
+#   - Cross-Origin-Opener-Policy : isolation cross-origin
+#   - Cross-Origin-Resource-Policy : isolation cross-origin
+# =============================================================================
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: middleware
+  annotations:
+    description: "Headers securite OWASP - Applique globalement"
+spec:
+  headers:
+    # --- Protection contre le clickjacking ---
+    frameDeny: true
+    # Equivalent : X-Frame-Options: DENY
+
+    # --- Empeche le MIME type sniffing ---
+    contentTypeNosniff: true
+    # Equivalent : X-Content-Type-Options: nosniff
+
+    # --- Protection XSS navigateur ---
+    browserXssFilter: true
+    # Equivalent : X-XSS-Protection: 1; mode=block
+
+    # --- HSTS (HTTP Strict Transport Security) ---
+    # Force HTTPS pendant 1 an, incluant les sous-domaines
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    # Equivalent : Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+
+    # Force la redirection HTTPS meme si le header est deja present
+    forceSTSHeader: true
+
+    # --- Content-Security-Policy ---
+    # Politique restrictive : seul le meme domaine est autorise
+    contentSecurityPolicy: >-
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval';
+      style-src 'self' 'unsafe-inline';
+      img-src 'self' data: blob:;
+      font-src 'self' data:;
+      connect-src 'self' https://api.saas.local wss://api.saas.local;
+      frame-ancestors 'none';
+      base-uri 'self';
+      form-action 'self';
+      upgrade-insecure-requests
+
+    # --- Referrer-Policy ---
+    referrerPolicy: "strict-origin-when-cross-origin"
+
+    # --- Permissions-Policy ---
+    # Desactive les API navigateur dangereuses ou non necessaires
+    permissionsPolicy: >-
+      geolocation=(),
+      microphone=(),
+      camera=(),
+      payment=(),
+      usb=(),
+      magnetometer=(),
+      gyroscope=(),
+      accelerometer=()
+
+    # --- Headers custom additionnels ---
+    customResponseHeaders:
+      # Bloque les politiques cross-domain Flash/PDF
+      X-Permitted-Cross-Domain-Policies: "none"
+      # Isolation cross-origin
+      Cross-Origin-Embedder-Policy: "require-corp"
+      Cross-Origin-Opener-Policy: "same-origin"
+      Cross-Origin-Resource-Policy: "same-origin"
+
+    # --- Supprimer les headers revelant la stack ---
+    customRequestHeaders:
+      X-Powered-By: ""
+      Server: ""

@@ -1,0 +1,46 @@
+# =============================================================================
+# ClusterIssuer - Let's Encrypt Staging
+# =============================================================================
+# ClusterIssuer staging pour tester la generation de certificats
+# SANS consommer les rate limits de production.
+#
+# Les certificats staging ne sont PAS valides (non trusted par les navigateurs)
+# mais permettent de valider :
+#   - La configuration ACME
+#   - La resolution DNS
+#   - Le routage HTTP-01
+#   - Le stockage des secrets
+#
+# Workflow de test :
+#   1. Deployer avec letsencrypt-staging
+#   2. Verifier que le Certificate passe en Ready
+#   3. Verifier que le challenge HTTP-01 reussit
+#   4. Basculer vers letsencrypt-prod
+#
+# Rate limits staging : beaucoup plus permissifs que prod
+# =============================================================================
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app: cert-manager
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: issuer
+  annotations:
+    description: "Let's Encrypt Staging - Tests certificats (non trusted)"
+spec:
+  acme:
+    # Serveur ACME Let's Encrypt Staging
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    # Meme email que prod
+    email: admin@saas.local
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressTemplate:
+              metadata:
+                annotations:
+                  kubernetes.io/ingress.class: traefik

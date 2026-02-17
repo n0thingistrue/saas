@@ -1,0 +1,79 @@
+# =============================================================================
+# Middlewares - Rate Limiting
+# =============================================================================
+# Deux niveaux de rate limiting :
+#
+# 1. rate-limit-default : pour le frontend (plus permissif)
+#    - 100 req/s en moyenne, burst 200
+#    - Adapte au chargement de pages web (HTML + assets)
+#
+# 2. rate-limit-api : pour le backend API (plus strict)
+#    - 50 req/s en moyenne, burst 100
+#    - Protection contre l'abus d'API
+#
+# Le rate limiting est applique par IP source.
+# Derriere un Load Balancer, s'assurer que X-Forwarded-For est configure.
+# =============================================================================
+---
+# Rate limit default (Frontend - permissif)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit-default
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: middleware
+  annotations:
+    description: "Rate limiting default - 100 req/s, burst 200"
+spec:
+  rateLimit:
+    average: 100
+    burst: 200
+    period: 1s
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+---
+# Rate limit API (Backend - strict)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit-api
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: middleware
+  annotations:
+    description: "Rate limiting API strict - 50 req/s, burst 100"
+spec:
+  rateLimit:
+    average: 50
+    burst: 100
+    period: 1s
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+---
+# Rate limit Auth endpoints (tres strict - anti brute-force)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit-auth
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: middleware
+  annotations:
+    description: "Rate limiting Auth - 10 req/min, burst 20 (anti brute-force)"
+spec:
+  rateLimit:
+    average: 10
+    burst: 20
+    period: 1m
+    sourceCriterion:
+      ipStrategy:
+        depth: 1

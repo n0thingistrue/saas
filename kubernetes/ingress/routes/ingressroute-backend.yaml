@@ -1,0 +1,125 @@
+# =============================================================================
+# IngressRoute - Backend NestJS API
+# =============================================================================
+# Route le trafic HTTPS vers le backend NestJS.
+#
+# Host : api.saas.local
+# Paths :
+#   - /api/*       → Backend REST API
+#   - /graphql     → Backend GraphQL endpoint
+#   - /health      → Health check public
+#   - /health/ready → Readiness check
+#
+# Middlewares appliques :
+#   1. security-headers : headers OWASP
+#   2. rate-limit-api : 50 req/s (strict)
+#   3. waf-modsecurity : WAF OWASP CRS 4.0 (block mode)
+#
+# Rate limiting specifique pour /api/auth/* (anti brute-force)
+#
+# TLS : certificat gere par cert-manager (Secret backend-tls)
+# =============================================================================
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: backend-api
+  namespace: production
+  labels:
+    app: backend
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: ingress
+  annotations:
+    description: "Route HTTPS vers Backend NestJS API"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # --- REST API ---
+    - match: Host(`api.saas.local`) && PathPrefix(`/api`)
+      kind: Rule
+      middlewares:
+        - name: security-headers
+          namespace: ingress
+        - name: rate-limit-api
+          namespace: ingress
+        - name: waf-modsecurity
+          namespace: ingress
+      services:
+        - name: backend
+          namespace: production
+          port: 3000
+          strategy: RoundRobin
+          passHostHeader: true
+
+    # --- GraphQL ---
+    - match: Host(`api.saas.local`) && Path(`/graphql`)
+      kind: Rule
+      middlewares:
+        - name: security-headers
+          namespace: ingress
+        - name: rate-limit-api
+          namespace: ingress
+        - name: waf-modsecurity
+          namespace: ingress
+      services:
+        - name: backend
+          namespace: production
+          port: 3000
+
+    # --- Health checks (pas de WAF, pas de rate limit strict) ---
+    - match: Host(`api.saas.local`) && (Path(`/health`) || Path(`/health/ready`))
+      kind: Rule
+      middlewares:
+        - name: security-headers
+          namespace: ingress
+      services:
+        - name: backend
+          namespace: production
+          port: 3000
+  tls:
+    secretName: backend-tls
+    options:
+      name: default
+      namespace: ingress
+---
+# =============================================================================
+# IngressRoute - Auth endpoints (rate limit anti brute-force)
+# =============================================================================
+# Rate limiting tres strict sur les endpoints d'authentification
+# pour prevenir les attaques par brute-force.
+# =============================================================================
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: backend-auth
+  namespace: production
+  labels:
+    app: backend
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: ingress
+  annotations:
+    description: "Route Auth API avec rate limit strict anti brute-force"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`api.saas.local`) && PathPrefix(`/api/auth`)
+      kind: Rule
+      # Priorite plus haute pour matcher avant /api/*
+      priority: 100
+      middlewares:
+        - name: security-headers
+          namespace: ingress
+        - name: rate-limit-auth
+          namespace: ingress
+        - name: waf-modsecurity
+          namespace: ingress
+      services:
+        - name: backend
+          namespace: production
+          port: 3000
+  tls:
+    secretName: backend-tls
+    options:
+      name: default
+      namespace: ingress

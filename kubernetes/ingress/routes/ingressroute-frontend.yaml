@@ -1,0 +1,51 @@
+# =============================================================================
+# IngressRoute - Frontend Next.js
+# =============================================================================
+# Route le trafic HTTPS vers le frontend Next.js.
+#
+# Host : app.saas.local
+# Service : frontend.production:3001
+#
+# Middlewares appliques :
+#   1. security-headers : headers OWASP
+#   2. compress : gzip/brotli pour HTML/CSS/JS
+#   3. rate-limit-default : 100 req/s
+#
+# TLS : certificat gere par cert-manager (Secret frontend-tls)
+# =============================================================================
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: frontend
+  namespace: production
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: ingress
+  annotations:
+    description: "Route HTTPS vers Frontend Next.js"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # Route principale : toutes les pages
+    - match: Host(`app.saas.local`)
+      kind: Rule
+      middlewares:
+        - name: security-headers
+          namespace: ingress
+        - name: compress
+          namespace: ingress
+        - name: rate-limit-default
+          namespace: ingress
+      services:
+        - name: frontend
+          namespace: production
+          port: 3001
+          strategy: RoundRobin
+          passHostHeader: true
+  tls:
+    secretName: frontend-tls
+    options:
+      name: default
+      namespace: ingress

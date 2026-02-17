@@ -1,0 +1,77 @@
+# =============================================================================
+# Service - Traefik Ingress Controller
+# =============================================================================
+# Expose Traefik sur les ports 80 et 443.
+# Type LoadBalancer pour etre accessible depuis l'exterieur
+# via le Hetzner Load Balancer.
+#
+# Annotations Hetzner Cloud :
+#   - load-balancer.hetzner.cloud/name : nom du LB
+#   - load-balancer.hetzner.cloud/location : datacenter
+#   - load-balancer.hetzner.cloud/use-private-ip : utilise le reseau prive
+#   - load-balancer.hetzner.cloud/uses-proxyprotocol : Proxy Protocol v2
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress-controller
+  annotations:
+    description: "Traefik Ingress - LoadBalancer externe"
+    # --- Hetzner Cloud Load Balancer ---
+    load-balancer.hetzner.cloud/name: "saas-lb"
+    load-balancer.hetzner.cloud/location: "fsn1"
+    load-balancer.hetzner.cloud/use-private-ip: "true"
+    load-balancer.hetzner.cloud/uses-proxyprotocol: "true"
+    load-balancer.hetzner.cloud/algorithm-type: "least_connections"
+    load-balancer.hetzner.cloud/health-check-interval: "15s"
+    load-balancer.hetzner.cloud/health-check-timeout: "10s"
+    load-balancer.hetzner.cloud/health-check-retries: "3"
+spec:
+  type: LoadBalancer
+  # Preserve l'IP source du client (pas de SNAT)
+  externalTrafficPolicy: Local
+  selector:
+    app: traefik
+  ports:
+    - name: web
+      port: 80
+      targetPort: web
+      protocol: TCP
+    - name: websecure
+      port: 443
+      targetPort: websecure
+      protocol: TCP
+---
+# =============================================================================
+# Service interne - Dashboard + Metrics
+# =============================================================================
+# Service ClusterIP pour acces interne au dashboard et aux metriques.
+# Pas expose a l'exterieur directement.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik-internal
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    app: traefik
+  ports:
+    - name: dashboard
+      port: 8080
+      targetPort: dashboard
+      protocol: TCP
+    - name: metrics
+      port: 9100
+      targetPort: metrics
+      protocol: TCP
