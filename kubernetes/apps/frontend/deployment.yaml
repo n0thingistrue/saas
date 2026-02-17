@@ -1,0 +1,169 @@
+# =============================================================================
+# Deployment - Frontend Next.js 14
+# =============================================================================
+# Deploie le frontend Next.js avec 2 replicas repartis :
+#   - 1 replica sur Node 1 (principal)
+#   - 1 replica sur Node 2 (HA)
+#
+# Le frontend est l'interface utilisateur :
+#   - SSR (Server-Side Rendering) sur port 3001
+#   - Appels API backend via URL interne K8s (SSR)
+#   - Appels API backend via URL publique (client-side)
+#   - NextAuth pour la gestion de session
+#
+# Strategie : RollingUpdate avec maxUnavailable=0
+# pour garantir zero downtime pendant les mises a jour.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: production
+  labels:
+    app: frontend
+    tier: application
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: application
+    app.kubernetes.io/version: "1.0.0"
+  annotations:
+    description: "Frontend Next.js 14 - SSR + SPA"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Jamais de pod indisponible pendant un update (zero downtime)
+      maxUnavailable: 0
+      # Maximum 1 pod supplementaire pendant le rollout
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: frontend
+      tier: application
+  template:
+    metadata:
+      labels:
+        app: frontend
+        tier: application
+        app.kubernetes.io/name: frontend
+        app.kubernetes.io/component: web
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3001"
+        prometheus.io/path: "/api/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: default
+
+      # --- Affinite preferentielle ---
+      # Repartir les 2 replicas sur les 2 nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["frontend"]
+                topologyKey: kubernetes.io/hostname
+
+      # --- Topology Spread ---
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: frontend
+
+      containers:
+        - name: frontend
+          # Image placeholder - remplacer par votre image build via CI/CD
+          image: docker.io/your-username/saas-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+              name: http
+              protocol: TCP
+
+          # --- Variables d'environnement ---
+          envFrom:
+            # Variables non-sensibles depuis ConfigMap
+            - configMapRef:
+                name: frontend-config
+          env:
+            # Variables sensibles depuis Secrets
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: frontend-secrets
+                  key: NEXTAUTH_SECRET
+
+          # --- Health Checks ---
+          # Liveness : le process Next.js tourne
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness : le frontend peut servir des pages
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Startup : premier demarrage (build cache, etc.)
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 20
+
+          # --- Resources ---
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          # --- Security ---
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          # --- Volumes ---
+          volumeMounts:
+            # Repertoire temporaire pour le runtime Next.js
+            - name: tmp
+              mountPath: /tmp
+            # Cache Next.js (.next/cache)
+            - name: nextjs-cache
+              mountPath: /app/.next/cache
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 50Mi
+        - name: nextjs-cache
+          emptyDir:
+            sizeLimit: 200Mi

@@ -1,0 +1,61 @@
+# =============================================================================
+# ConfigMap - Frontend Next.js Configuration
+# =============================================================================
+# Variables d'environnement non-sensibles pour le frontend Next.js 14.
+# Next.js utilise deux types de variables :
+#   - NEXT_PUBLIC_* : exposees cote client (injectees au build)
+#   - Sans prefix : disponibles uniquement cote serveur (SSR)
+#
+# Le frontend expose :
+#   - SSR sur port 3001
+#   - Health check sur /api/health
+#   - Metriques sur /api/metrics (custom)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  namespace: production
+  labels:
+    app: frontend
+    component: config
+    tier: application
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: application
+  annotations:
+    description: "Configuration applicative Frontend Next.js"
+data:
+  # --- Application ---
+  NODE_ENV: "production"
+  PORT: "3001"
+  HOSTNAME: "0.0.0.0"
+
+  # --- Backend API (cote serveur SSR) ---
+  # URL interne Kubernetes pour les appels SSR (server-side)
+  BACKEND_URL: "http://backend.production.svc.cluster.local:3000"
+  BACKEND_API_PREFIX: "/api"
+  BACKEND_GRAPHQL_URL: "http://backend.production.svc.cluster.local:3000/graphql"
+
+  # --- Variables publiques (exposees cote client) ---
+  # URL publique de l'API (via Traefik Ingress)
+  NEXT_PUBLIC_API_URL: "https://api.saas.local/api"
+  NEXT_PUBLIC_GRAPHQL_URL: "https://api.saas.local/graphql"
+  NEXT_PUBLIC_APP_NAME: "SaaS Platform"
+  NEXT_PUBLIC_APP_VERSION: "1.0.0"
+
+  # --- Auth ---
+  # NextAuth / session configuration
+  NEXTAUTH_URL: "https://app.saas.local"
+  NEXTAUTH_SESSION_STRATEGY: "jwt"
+  NEXTAUTH_SESSION_MAX_AGE: "3600"
+
+  # --- Cache / ISR ---
+  # Revalidation par defaut pour ISR (Incremental Static Regeneration)
+  NEXT_REVALIDATE_DEFAULT: "60"
+
+  # --- Telemetry ---
+  NEXT_TELEMETRY_DISABLED: "1"
+
+  # --- Logging ---
+  LOG_LEVEL: "info"

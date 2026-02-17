@@ -1,0 +1,191 @@
+# =============================================================================
+# ConfigMap - Samba-AD Init Scripts
+# =============================================================================
+# Scripts executes au premier demarrage pour provisionner le domaine AD.
+# Idempotents : detectent si le domaine existe deja avant de provisionner.
+#
+# Actions :
+#   1. Provision du domaine SAAS.LOCAL (samba-tool domain provision)
+#   2. Creation OUs (Users, Groups, Services, Computers)
+#   3. Creation groupes (admins, developers, monitoring, backup)
+#   4. Creation users de service (app-backend, app-frontend, monitoring)
+#   5. Configuration password policy (complexite, expiration)
+#   6. Configuration DNS
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: samba-init
+  namespace: production
+  labels:
+    app: samba-ad
+    component: init
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/component: init-scripts
+    app.kubernetes.io/part-of: auth
+  annotations:
+    description: "Scripts de provisioning Samba Active Directory"
+data:
+  # -------------------------------------------------------------------------
+  # Script principal de provisioning
+  # -------------------------------------------------------------------------
+  init-domain.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "============================================"
+    echo "  Samba-AD Domain Provisioning"
+    echo "  $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "============================================"
+
+    DOMAIN="SAAS.LOCAL"
+    REALM="SAAS.LOCAL"
+    NETBIOS="SAAS"
+    ADMIN_PASS="${SAMBA_ADMIN_PASSWORD}"
+    DATA_DIR="/var/lib/samba"
+    MARKER_FILE="${DATA_DIR}/.provisioned"
+
+    # --- Verifier si deja provisionne ---
+    if [ -f "$MARKER_FILE" ]; then
+      echo "[INIT] Domaine deja provisionne, demarrage direct..."
+      # Copier la config Kerberos
+      cp /etc/samba-config/krb5.conf /etc/krb5.conf 2>/dev/null || true
+      exit 0
+    fi
+
+    echo "[INIT] Premier demarrage - provisioning du domaine $DOMAIN..."
+
+    # --- 1. Provisioning du domaine ---
+    echo "[1/6] Provisioning du domaine AD..."
+    samba-tool domain provision \
+      --use-rfc2307 \
+      --realm="${REALM}" \
+      --domain="${NETBIOS}" \
+      --server-role=dc \
+      --dns-backend=SAMBA_INTERNAL \
+      --adminpass="${ADMIN_PASS}" \
+      --option="interfaces=eth0 lo" \
+      --option="bind interfaces only=yes"
+
+    echo "[INIT] Domaine provisionne"
+
+    # Copier la config Kerberos generee
+    cp /etc/samba-config/krb5.conf /etc/krb5.conf 2>/dev/null || true
+    cp "${DATA_DIR}/private/krb5.conf" /etc/krb5.conf 2>/dev/null || true
+
+    # --- 2. Creation des OUs ---
+    echo "[2/6] Creation des Organizational Units..."
+    for OU in Users Groups Services Computers; do
+      samba-tool ou create "OU=${OU}" 2>/dev/null || echo "  OU=${OU} existe deja"
+    done
+
+    # --- 3. Creation des groupes ---
+    echo "[3/6] Creation des groupes..."
+    for GROUP in admins developers monitoring backup readonly; do
+      samba-tool group add "${GROUP}" \
+        --groupou="OU=Groups" \
+        --description="Groupe ${GROUP}" 2>/dev/null || echo "  Groupe ${GROUP} existe deja"
+    done
+
+    # --- 4. Creation des users de service ---
+    echo "[4/6] Creation des comptes de service..."
+
+    # Compte backend NestJS (LDAP bind)
+    samba-tool user create "app-backend" "${ADMIN_PASS}" \
+      --userou="OU=Services" \
+      --description="Service account for NestJS Backend API" \
+      --mail-address="backend@saas.local" 2>/dev/null || echo "  User app-backend existe deja"
+    samba-tool user setexpiry app-backend --noexpiry 2>/dev/null || true
+
+    # Compte frontend (lecture seule LDAP)
+    samba-tool user create "app-frontend" "${ADMIN_PASS}" \
+      --userou="OU=Services" \
+      --description="Service account for Next.js Frontend" \
+      --mail-address="frontend@saas.local" 2>/dev/null || echo "  User app-frontend existe deja"
+    samba-tool user setexpiry app-frontend --noexpiry 2>/dev/null || true
+
+    # Compte monitoring (lecture Prometheus)
+    samba-tool user create "monitoring" "${ADMIN_PASS}" \
+      --userou="OU=Services" \
+      --description="Service account for monitoring stack" \
+      --mail-address="monitoring@saas.local" 2>/dev/null || echo "  User monitoring existe deja"
+    samba-tool user setexpiry monitoring --noexpiry 2>/dev/null || true
+
+    # Compte admin operationnel (different de Administrator)
+    samba-tool user create "sysadmin" "${ADMIN_PASS}" \
+      --userou="OU=Users" \
+      --description="System Administrator" \
+      --mail-address="admin@saas.local" 2>/dev/null || echo "  User sysadmin existe deja"
+
+    # Ajouter sysadmin au groupe admins
+    samba-tool group addmembers admins sysadmin 2>/dev/null || true
+    samba-tool group addmembers "Domain Admins" sysadmin 2>/dev/null || true
+
+    # --- 5. Password Policy ---
+    echo "[5/6] Configuration de la politique de mots de passe..."
+    samba-tool domain passwordsettings set \
+      --complexity=on \
+      --history-length=12 \
+      --min-pwd-length=12 \
+      --min-pwd-age=1 \
+      --max-pwd-age=90 \
+      --account-lockout-threshold=5 \
+      --account-lockout-duration=30 \
+      --reset-account-lockout-after=15
+
+    # --- 6. TLS auto-signe (sera remplace par cert-manager) ---
+    echo "[6/6] Generation certificats TLS auto-signes..."
+    TLS_DIR="${DATA_DIR}/private/tls"
+    mkdir -p "$TLS_DIR"
+
+    if [ ! -f "${TLS_DIR}/key.pem" ]; then
+      openssl req -x509 -nodes -days 3650 \
+        -newkey rsa:4096 \
+        -keyout "${TLS_DIR}/key.pem" \
+        -out "${TLS_DIR}/cert.pem" \
+        -subj "/C=FR/ST=IDF/L=Paris/O=SaaS/OU=IT/CN=dc1.saas.local" \
+        -addext "subjectAltName=DNS:dc1.saas.local,DNS:samba-ad.production.svc.cluster.local"
+      cp "${TLS_DIR}/cert.pem" "${TLS_DIR}/ca.pem"
+      echo "[INIT] Certificats TLS generes"
+    fi
+
+    # --- Marqueur de provisioning ---
+    echo "$(date '+%Y-%m-%d %H:%M:%S')" > "$MARKER_FILE"
+
+    echo ""
+    echo "============================================"
+    echo "  Domaine $DOMAIN provisionne avec succes"
+    echo "============================================"
+    echo ""
+    echo "  Domain:    $DOMAIN"
+    echo "  Realm:     $REALM"
+    echo "  NetBIOS:   $NETBIOS"
+    echo "  DNS:       samba-ad.production.svc.cluster.local"
+    echo "  LDAP:      ldap://samba-ad.production.svc:389"
+    echo "  LDAPS:     ldaps://samba-ad.production.svc:636"
+    echo "  Kerberos:  samba-ad.production.svc:88"
+    echo ""
+    echo "  Admin DN:  CN=Administrator,CN=Users,DC=saas,DC=local"
+    echo "  Bind DN:   CN=app-backend,OU=Services,DC=saas,DC=local"
+    echo ""
+
+  # -------------------------------------------------------------------------
+  # Health check scripts
+  # -------------------------------------------------------------------------
+  health-check.sh: |
+    #!/bin/bash
+    # Verifie que Samba-AD repond aux requetes LDAP
+    ldapsearch -x -H ldap://localhost:389 \
+      -b "DC=saas,DC=local" \
+      -D "CN=Administrator,CN=Users,DC=saas,DC=local" \
+      -w "${SAMBA_ADMIN_PASSWORD}" \
+      "(objectClass=domain)" dn 2>/dev/null | grep -q "dn:" && exit 0
+    exit 1
+
+  dns-check.sh: |
+    #!/bin/bash
+    # Verifie que le DNS Samba repond
+    host -t SRV _ldap._tcp.saas.local 127.0.0.1 >/dev/null 2>&1 && exit 0
+    # Fallback : tester si le port DNS est ouvert
+    nc -z localhost 53 2>/dev/null && exit 0
+    exit 1

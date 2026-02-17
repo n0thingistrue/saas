@@ -1,0 +1,101 @@
+# =============================================================================
+# PodMonitor + Alertes - Samba-AD
+# =============================================================================
+# Monitoring du Domain Controller Samba-AD.
+# Les metriques sont collectees via un exporter custom ou des probes.
+#
+# Alertes critiques :
+#   - Samba-AD down (plus d'auth LDAP possible)
+#   - DNS resolution failure (impacte la decouverte de services)
+#   - Kerberos KDC down (impacte le SSO)
+#   - LDAP auth failures (tentatives brute-force potentielles)
+# =============================================================================
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: samba-ad-alerts
+  namespace: monitoring
+  labels:
+    app: samba-ad
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/part-of: monitoring-stack
+    prometheus: kube-prometheus
+spec:
+  groups:
+    - name: samba-ad.rules
+      rules:
+        # CRITIQUE : Samba-AD pod down
+        - alert: SambaADDown
+          expr: |
+            kube_pod_status_phase{namespace="production", pod=~"samba-ad-.*", phase="Running"} == 0
+            or absent(kube_pod_status_phase{namespace="production", pod=~"samba-ad-.*", phase="Running"})
+          for: 1m
+          labels:
+            severity: critical
+            service: samba-ad
+          annotations:
+            summary: "Samba Active Directory est DOWN"
+            description: "Le Domain Controller SAAS.LOCAL est indisponible. L'authentification LDAP/Kerberos ne fonctionne plus."
+
+        # CRITIQUE : Samba-AD pod en restart loop
+        - alert: SambaADCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace="production", container="samba-ad"}[1h]) > 3
+          for: 0m
+          labels:
+            severity: critical
+            service: samba-ad
+          annotations:
+            summary: "Samba-AD redemarrage en boucle ({{ $value }} restarts/h)"
+            description: "Le pod Samba-AD redémarre de manière répétée. Vérifier les logs."
+
+        # WARNING : Samba-AD pod not ready
+        - alert: SambaADNotReady
+          expr: kube_pod_status_ready{namespace="production", pod=~"samba-ad-.*"} == 0
+          for: 2m
+          labels:
+            severity: warning
+            service: samba-ad
+          annotations:
+            summary: "Samba-AD n'est pas Ready"
+            description: "Le health check LDAP echoue. Le service peut etre degrade."
+
+        # WARNING : Utilisation memoire elevee
+        - alert: SambaADMemoryHigh
+          expr: |
+            container_memory_working_set_bytes{namespace="production", container="samba-ad"}
+            / container_spec_memory_limit_bytes{namespace="production", container="samba-ad"}
+            * 100 > 90
+          for: 5m
+          labels:
+            severity: warning
+            service: samba-ad
+          annotations:
+            summary: "Samba-AD memoire > 90% ({{ $value | humanize }}%)"
+            description: "Risque d'OOM. Envisager d'augmenter les limites memoire."
+
+        # WARNING : CPU eleve
+        - alert: SambaADCPUHigh
+          expr: |
+            rate(container_cpu_usage_seconds_total{namespace="production", container="samba-ad"}[5m])
+            / container_spec_cpu_quota{namespace="production", container="samba-ad"}
+            * container_spec_cpu_period{namespace="production", container="samba-ad"}
+            * 100 > 80
+          for: 10m
+          labels:
+            severity: warning
+            service: samba-ad
+          annotations:
+            summary: "Samba-AD CPU > 80%"
+            description: "Utilisation CPU elevee sur le DC. Verifier les requetes LDAP."
+
+        # INFO : Pod restarted
+        - alert: SambaADRestarted
+          expr: increase(kube_pod_container_status_restarts_total{namespace="production", container="samba-ad"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: info
+            service: samba-ad
+          annotations:
+            summary: "Samba-AD a redemarré"
+            description: "Le pod Samba-AD a ete redemarré. Verifier les logs."

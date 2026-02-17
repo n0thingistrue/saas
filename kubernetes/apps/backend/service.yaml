@@ -1,0 +1,33 @@
+# =============================================================================
+# Service - Backend NestJS
+# =============================================================================
+# Service ClusterIP pour le backend NestJS.
+# Le backend est accessible uniquement depuis l'interieur du cluster :
+#   - Traefik Ingress → backend:3000 (REST API + GraphQL)
+#   - Frontend Next.js → backend:3000 (SSR API calls)
+#
+# Le port 3000 est le port principal HTTP du backend NestJS.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: production
+  labels:
+    app: backend
+    tier: application
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: application
+  annotations:
+    description: "Service Backend NestJS - REST + GraphQL API"
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+    tier: application
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP

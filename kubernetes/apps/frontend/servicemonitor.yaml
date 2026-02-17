@@ -1,0 +1,122 @@
+# =============================================================================
+# ServiceMonitor + Alertes - Frontend Next.js
+# =============================================================================
+# Monitoring du frontend Next.js via Prometheus.
+# Le frontend expose ses metriques sur /api/metrics (port 3001).
+#
+# Alertes :
+#   - FrontendDown : aucun pod frontend disponible
+#   - FrontendHighErrorRate : taux d'erreurs HTTP 5xx > 5%
+#   - FrontendHighLatency : p95 latence SSR > 1s
+#   - FrontendHighMemory : memoire > 85%
+#   - FrontendPodRestarted : redemarrage detecte
+# =============================================================================
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: frontend-monitor
+  namespace: monitoring
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: monitoring-stack
+    prometheus: kube-prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - production
+  selector:
+    matchLabels:
+      app: frontend
+      tier: application
+  endpoints:
+    - port: http
+      path: /api/metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
+# =============================================================================
+# PrometheusRule - Alertes Frontend
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: frontend-alerts
+  namespace: monitoring
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: monitoring-stack
+    prometheus: kube-prometheus
+spec:
+  groups:
+    - name: frontend.rules
+      rules:
+        # CRITIQUE : Aucun pod frontend disponible
+        - alert: FrontendDown
+          expr: |
+            absent(up{job="frontend", namespace="production"} == 1)
+            or count(up{job="frontend", namespace="production"} == 1) == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: frontend
+          annotations:
+            summary: "Frontend Next.js est DOWN"
+            description: "Aucun pod frontend ne repond. L'application web est indisponible."
+
+        # WARNING : Taux d'erreurs HTTP 5xx > 5%
+        - alert: FrontendHighErrorRate
+          expr: |
+            (
+              sum(rate(http_requests_total{job="frontend", namespace="production", status=~"5.."}[5m]))
+              /
+              sum(rate(http_requests_total{job="frontend", namespace="production"}[5m]))
+            ) * 100 > 5
+          for: 3m
+          labels:
+            severity: warning
+            service: frontend
+          annotations:
+            summary: "Frontend taux d'erreurs 5xx > 5% ({{ $value | humanize }}%)"
+            description: "Le frontend retourne trop d'erreurs. Verifier les appels backend SSR."
+
+        # WARNING : Latence SSR p95 > 1s
+        - alert: FrontendHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket{job="frontend", namespace="production"}[5m])) by (le)
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+            service: frontend
+          annotations:
+            summary: "Frontend latence SSR p95 > 1s ({{ $value | humanize }}s)"
+            description: "Le rendu SSR est lent. Verifier les appels backend et le cache ISR."
+
+        # WARNING : Memoire > 85% des limites
+        - alert: FrontendHighMemory
+          expr: |
+            container_memory_working_set_bytes{namespace="production", container="frontend"}
+            / container_spec_memory_limit_bytes{namespace="production", container="frontend"}
+            * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+            service: frontend
+          annotations:
+            summary: "Frontend memoire > 85% ({{ $value | humanize }}%)"
+            description: "Risque d'OOM. Verifier les fuites memoire ou augmenter les limites."
+
+        # INFO : Pod redemarrage detecte
+        - alert: FrontendPodRestarted
+          expr: increase(kube_pod_container_status_restarts_total{namespace="production", container="frontend"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: info
+            service: frontend
+          annotations:
+            summary: "Frontend pod a redemarré"
+            description: "Un pod frontend a ete redemarré. Verifier les logs pour la cause."

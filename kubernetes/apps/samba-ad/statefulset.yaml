@@ -1,0 +1,249 @@
+# =============================================================================
+# StatefulSet - Samba Active Directory Domain Controller
+# =============================================================================
+# Deploie un Domain Controller Samba-AD sur Node 1 (singleton).
+#
+# Samba-AD est un service critique et stateful :
+#   - Base de donnees AD (sam.ldb) doit persister
+#   - DNS integre pour la resolution de la zone saas.local
+#   - Kerberos KDC pour l'authentification SSO
+#   - SYSVOL pour les Group Policies
+#
+# Ports exposes :
+#   53  (TCP/UDP) : DNS
+#   88  (TCP/UDP) : Kerberos
+#   389 (TCP)     : LDAP
+#   636 (TCP)     : LDAPS (TLS)
+#   445 (TCP)     : SMB/CIFS
+#   464 (TCP/UDP) : Kerberos password change
+#   3268 (TCP)    : Global Catalog LDAP
+#
+# Deploye exclusivement sur Node 1 (affinite stricte).
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: samba-ad
+  namespace: production
+  labels:
+    app: samba-ad
+    tier: auth
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/component: domain-controller
+    app.kubernetes.io/part-of: auth
+    app.kubernetes.io/version: "4.19"
+  annotations:
+    description: "Samba Active Directory Domain Controller - SAAS.LOCAL"
+spec:
+  serviceName: samba-ad-headless
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: samba-ad
+  template:
+    metadata:
+      labels:
+        app: samba-ad
+        tier: auth
+        app.kubernetes.io/name: samba-ad
+        app.kubernetes.io/component: domain-controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      # Hostname requis par Samba pour le NetBIOS name
+      hostname: dc1
+      subdomain: samba-ad-headless
+      terminationGracePeriodSeconds: 60
+
+      # --- Affinite stricte Node 1 ---
+      # Samba-AD est un singleton critique, toujours sur le node principal
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role
+                    operator: In
+                    values: ["control-plane"]
+                  - key: node-size
+                    operator: In
+                    values: ["large"]
+
+      # --- Init Container ---
+      initContainers:
+        # Permissions et provisioning du domaine
+        - name: init-domain
+          image: nowsci/samba-domain:latest
+          command: ["/bin/bash", "/scripts/init-domain.sh"]
+          env:
+            - name: SAMBA_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: samba-ad-credentials
+                  key: ADMIN_PASSWORD
+          volumeMounts:
+            - name: samba-data
+              mountPath: /var/lib/samba
+            - name: samba-config-dir
+              mountPath: /etc/samba
+            - name: init-scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: samba-config
+              mountPath: /etc/samba-config
+              readOnly: true
+            - name: samba-logs
+              mountPath: /var/log/samba
+          securityContext:
+            # Samba-AD a besoin de privilèges pour les ports < 1024
+            # et pour manipuler les ACL filesystem
+            privileged: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+
+      # --- Containers ---
+      containers:
+        # -----------------------------------------------------------------
+        # Container principal : Samba-AD Domain Controller
+        # -----------------------------------------------------------------
+        - name: samba-ad
+          image: nowsci/samba-domain:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # Copier la config dans /etc/samba si pas deja fait
+              if [ ! -f /etc/samba/smb.conf ] || ! grep -q "SAAS.LOCAL" /etc/samba/smb.conf; then
+                cp /etc/samba-config/smb.conf /etc/samba/smb.conf
+              fi
+              cp /etc/samba-config/krb5.conf /etc/krb5.conf 2>/dev/null || true
+
+              echo "[SAMBA] Demarrage de Samba AD Domain Controller..."
+              exec samba --foreground --no-process-group
+          ports:
+            - containerPort: 53
+              name: dns-tcp
+              protocol: TCP
+            - containerPort: 53
+              name: dns-udp
+              protocol: UDP
+            - containerPort: 88
+              name: kerberos-tcp
+              protocol: TCP
+            - containerPort: 88
+              name: kerberos-udp
+              protocol: UDP
+            - containerPort: 389
+              name: ldap
+              protocol: TCP
+            - containerPort: 636
+              name: ldaps
+              protocol: TCP
+            - containerPort: 445
+              name: smb
+              protocol: TCP
+            - containerPort: 464
+              name: kpasswd
+              protocol: TCP
+            - containerPort: 3268
+              name: gc-ldap
+              protocol: TCP
+          env:
+            - name: SAMBA_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: samba-ad-credentials
+                  key: ADMIN_PASSWORD
+          # Health checks
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - /scripts/dns-check.sh
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - /scripts/health-check.sh
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            exec:
+              command:
+                - /bin/bash
+                - /scripts/dns-check.sh
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 800m
+              memory: "1800Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          volumeMounts:
+            - name: samba-data
+              mountPath: /var/lib/samba
+            - name: samba-config-dir
+              mountPath: /etc/samba
+            - name: samba-config
+              mountPath: /etc/samba-config
+              readOnly: true
+            - name: init-scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: samba-logs
+              mountPath: /var/log/samba
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - NET_ADMIN
+                - SYS_ADMIN
+                - NET_RAW
+
+      # --- Volumes ---
+      volumes:
+        - name: samba-config
+          configMap:
+            name: samba-config
+        - name: init-scripts
+          configMap:
+            name: samba-init
+            defaultMode: 0755
+        - name: samba-config-dir
+          emptyDir: {}
+        - name: samba-logs
+          emptyDir:
+            sizeLimit: 500Mi
+
+  # --- Volume Claim Templates ---
+  volumeClaimTemplates:
+    - metadata:
+        name: samba-data
+        labels:
+          app: samba-ad
+          app.kubernetes.io/name: samba-ad
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-storage
+        resources:
+          requests:
+            storage: 20Gi

@@ -1,0 +1,98 @@
+# =============================================================================
+# ConfigMap - Backend NestJS Configuration
+# =============================================================================
+# Variables d'environnement non-sensibles pour le backend NestJS.
+# Les secrets (mots de passe, tokens) sont dans un Secret separe.
+#
+# Le backend expose :
+#   - REST API sur /api/*
+#   - GraphQL sur /graphql
+#   - Health checks sur /health et /health/ready
+#   - Metriques Prometheus sur /metrics
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: production
+  labels:
+    app: backend
+    component: config
+    tier: application
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: application
+  annotations:
+    description: "Configuration applicative Backend NestJS"
+data:
+  # --- Application ---
+  NODE_ENV: "production"
+  API_PORT: "3000"
+  API_PREFIX: "/api"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+
+  # --- CORS ---
+  CORS_ORIGIN: "https://app.saas.local"
+  CORS_METHODS: "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+  CORS_CREDENTIALS: "true"
+
+  # --- Rate Limiting ---
+  RATE_LIMIT_TTL: "900"
+  RATE_LIMIT_MAX: "1000"
+
+  # --- PostgreSQL ---
+  DATABASE_HOST: "postgresql-primary.production.svc.cluster.local"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "saas_production"
+  DATABASE_SCHEMA: "app"
+  DATABASE_USER: "saas_app"
+  DATABASE_SSL: "false"
+  DATABASE_POOL_MIN: "5"
+  DATABASE_POOL_MAX: "20"
+  DATABASE_LOGGING: "false"
+  # Read replica pour les queries lourdes
+  DATABASE_REPLICA_HOST: "postgresql-replica.production.svc.cluster.local"
+
+  # --- Redis ---
+  REDIS_HOST: "redis-master.production.svc.cluster.local"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  REDIS_KEY_PREFIX: "saas:"
+  REDIS_TTL: "3600"
+  # Sentinel pour la decouverte du master
+  REDIS_SENTINEL_HOST: "redis-sentinel.production.svc.cluster.local"
+  REDIS_SENTINEL_PORT: "26379"
+  REDIS_SENTINEL_MASTER: "mymaster"
+
+  # --- Samba-AD / LDAP ---
+  LDAP_URL: "ldap://samba-ad.production.svc.cluster.local:389"
+  LDAP_BIND_DN: "CN=app-backend,OU=Services,DC=saas,DC=local"
+  LDAP_SEARCH_BASE: "OU=Users,DC=saas,DC=local"
+  LDAP_SEARCH_FILTER: "(&(objectClass=user)(sAMAccountName={{username}}))"
+  LDAP_SEARCH_ATTRIBUTES: "dn,sAMAccountName,mail,displayName,memberOf,givenName,sn"
+  LDAP_GROUP_SEARCH_BASE: "OU=Groups,DC=saas,DC=local"
+  KERBEROS_REALM: "SAAS.LOCAL"
+
+  # --- JWT ---
+  JWT_ALGORITHM: "HS256"
+  JWT_EXPIRATION: "3600"
+  JWT_REFRESH_EXPIRATION: "604800"
+  JWT_ISSUER: "saas-backend"
+
+  # --- GraphQL ---
+  GRAPHQL_PLAYGROUND: "false"
+  GRAPHQL_INTROSPECTION: "false"
+  GRAPHQL_DEBUG: "false"
+  GRAPHQL_PATH: "/graphql"
+
+  # --- Health Check ---
+  HEALTH_CHECK_TIMEOUT: "5000"
+  HEALTH_CHECK_DISK_THRESHOLD: "0.9"
+
+  # --- Swagger / OpenAPI ---
+  SWAGGER_ENABLED: "false"
+
+  # --- Pagination ---
+  PAGINATION_DEFAULT_LIMIT: "20"
+  PAGINATION_MAX_LIMIT: "100"

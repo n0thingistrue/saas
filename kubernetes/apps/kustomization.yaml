@@ -1,0 +1,42 @@
+# =============================================================================
+# Kustomization - Applications
+# =============================================================================
+# Orchestration du deploiement des applications.
+# Ordre de deploiement important :
+#   1. Samba-AD (Domain Controller - doit etre pret avant le backend)
+#   2. Backend NestJS (API - depend de Samba-AD, PG, Redis)
+#   3. Frontend Next.js (UI - depend du backend)
+#
+# Utilisation :
+#   kubectl apply -k kubernetes/apps/
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: production
+
+resources:
+  # --- Samba-AD (deployer en premier) ---
+  - samba-ad/samba-configmap.yaml
+  - samba-ad/samba-init-configmap.yaml
+  - samba-ad/statefulset.yaml
+  - samba-ad/services.yaml
+  - samba-ad/podmonitor.yaml
+
+  # --- Backend NestJS ---
+  - backend/backend-configmap.yaml
+  - backend/deployment.yaml
+  - backend/service.yaml
+  - backend/hpa.yaml
+  - backend/servicemonitor.yaml
+
+  # --- Frontend Next.js ---
+  - frontend/frontend-configmap.yaml
+  - frontend/deployment.yaml
+  - frontend/service.yaml
+  - frontend/hpa.yaml
+  - frontend/servicemonitor.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: application
+  app.kubernetes.io/managed-by: kustomize

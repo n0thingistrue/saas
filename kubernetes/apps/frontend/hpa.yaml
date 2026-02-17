@@ -1,0 +1,67 @@
+# =============================================================================
+# HorizontalPodAutoscaler - Frontend Next.js
+# =============================================================================
+# Auto-scaling du frontend entre 2 et 4 replicas.
+# Le frontend consomme moins de ressources que le backend.
+# Metriques de declenchement :
+#   - CPU moyen > 70% → scale up
+#   - Memoire moyenne > 80% → scale up
+#
+# Politique de scaling :
+#   - Scale up rapide (30s stabilisation)
+#   - Scale down lent (5min stabilisation)
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: production
+  labels:
+    app: frontend
+    tier: application
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: application
+  annotations:
+    description: "Auto-scaling Frontend Next.js - 2 a 4 replicas"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: 2
+  maxReplicas: 4
+
+  metrics:
+    # CPU moyenne des pods > 70% → scale up
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Memoire moyenne des pods > 80% → scale up
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+  behavior:
+    # Scale UP rapide
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Max
+    # Scale DOWN lent pour eviter le flapping
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+      selectPolicy: Min

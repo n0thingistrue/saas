@@ -1,0 +1,95 @@
+# =============================================================================
+# Services Samba Active Directory
+# =============================================================================
+# Service principal multi-ports pour tous les protocoles AD :
+#   - DNS (53)      : Resolution zone saas.local
+#   - Kerberos (88) : Authentification SSO
+#   - LDAP (389)    : Annuaire utilisateurs/groupes
+#   - LDAPS (636)   : LDAP chiffre TLS
+#   - SMB (445)     : Partage SYSVOL/Netlogon
+#   - GC (3268)     : Global Catalog
+# =============================================================================
+---
+# Service headless pour le StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: samba-ad-headless
+  namespace: production
+  labels:
+    app: samba-ad
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/component: headless-service
+    app.kubernetes.io/part-of: auth
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: ldap
+      port: 389
+      targetPort: 389
+    - name: dns
+      port: 53
+      targetPort: 53
+  selector:
+    app: samba-ad
+---
+# Service principal (ClusterIP)
+# Le backend se connecte via ce service pour l'authentification LDAP
+# URL : ldap://samba-ad.production.svc.cluster.local:389
+apiVersion: v1
+kind: Service
+metadata:
+  name: samba-ad
+  namespace: production
+  labels:
+    app: samba-ad
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/component: service
+    app.kubernetes.io/part-of: auth
+  annotations:
+    description: "Samba Active Directory - multi-protocol service"
+    # Annotation pour NetworkPolicy : seul le backend accede a ce service
+    networking.saas.io/consumers: "backend"
+spec:
+  type: ClusterIP
+  ports:
+    - name: dns-tcp
+      port: 53
+      targetPort: 53
+      protocol: TCP
+    - name: dns-udp
+      port: 53
+      targetPort: 53
+      protocol: UDP
+    - name: kerberos-tcp
+      port: 88
+      targetPort: 88
+      protocol: TCP
+    - name: kerberos-udp
+      port: 88
+      targetPort: 88
+      protocol: UDP
+    - name: ldap
+      port: 389
+      targetPort: 389
+      protocol: TCP
+    - name: ldaps
+      port: 636
+      targetPort: 636
+      protocol: TCP
+    - name: smb
+      port: 445
+      targetPort: 445
+      protocol: TCP
+    - name: kpasswd
+      port: 464
+      targetPort: 464
+      protocol: TCP
+    - name: gc-ldap
+      port: 3268
+      targetPort: 3268
+      protocol: TCP
+  selector:
+    app: samba-ad

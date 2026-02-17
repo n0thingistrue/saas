@@ -1,0 +1,204 @@
+# =============================================================================
+# Deployment - Backend NestJS API
+# =============================================================================
+# Deploie le backend NestJS avec 3 replicas repartis :
+#   - 2 replicas sur Node 1 (principal, plus de ressources)
+#   - 1 replica sur Node 2 (HA, ressources reduites)
+#
+# Le backend est le coeur applicatif :
+#   - REST API (CRUD, auth, business logic)
+#   - GraphQL API (queries, mutations, subscriptions)
+#   - Auth LDAP via Samba-AD (passport-ldapauth)
+#   - Cache Redis (sessions, cache queries)
+#   - ORM PostgreSQL (TypeORM/Prisma)
+#
+# Strategie : RollingUpdate avec maxUnavailable=0
+# pour garantir zero downtime pendant les mises a jour.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: production
+  labels:
+    app: backend
+    tier: application
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: application
+    app.kubernetes.io/version: "1.0.0"
+  annotations:
+    description: "Backend NestJS API - REST + GraphQL"
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Jamais de pod indisponible pendant un update (zero downtime)
+      maxUnavailable: 0
+      # Maximum 1 pod supplementaire pendant le rollout
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: backend
+      tier: application
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: application
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: default
+
+      # --- Affinite preferentielle ---
+      # Prefere repartir sur les 2 nodes
+      # Mais tolere plusieurs pods sur le meme node
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 80
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["backend"]
+                topologyKey: kubernetes.io/hostname
+        # Preferer Node 1 (plus de ressources)
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 60
+              preference:
+                matchExpressions:
+                  - key: node-size
+                    operator: In
+                    values: ["large"]
+
+      # --- Topology Spread ---
+      # Repartir au mieux entre les zones
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: backend
+
+      containers:
+        - name: backend
+          # Image placeholder - remplacer par votre image build via CI/CD
+          image: docker.io/your-username/saas-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          # --- Variables d'environnement ---
+          envFrom:
+            # Variables non-sensibles depuis ConfigMap
+            - configMapRef:
+                name: backend-config
+          env:
+            # Variables sensibles depuis Secrets
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DATABASE_PASSWORD
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: REDIS_PASSWORD
+            - name: LDAP_BIND_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: LDAP_BIND_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: JWT_SECRET
+            - name: JWT_REFRESH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: JWT_REFRESH_SECRET
+            # URL de connexion complete construite a partir des composants
+            - name: DATABASE_URL
+              value: "postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)?schema=$(DATABASE_SCHEMA)"
+
+          # --- Health Checks ---
+          # Liveness : le process tourne
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness : le backend peut traiter des requetes
+          # (verifie la connexion DB + Redis)
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Startup : premier demarrage (migrations DB, etc.)
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+
+          # --- Resources ---
+          resources:
+            requests:
+              cpu: 500m
+              memory: "1Gi"
+            limits:
+              cpu: "1500m"
+              memory: "3Gi"
+
+          # --- Security ---
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          # --- Volumes ---
+          volumeMounts:
+            # Repertoire temporaire pour les fichiers runtime
+            - name: tmp
+              mountPath: /tmp
+            # Repertoire pour les logs applicatifs
+            - name: logs
+              mountPath: /app/logs
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: logs
+          emptyDir:
+            sizeLimit: 200Mi

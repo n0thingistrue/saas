@@ -1,0 +1,69 @@
+# =============================================================================
+# HorizontalPodAutoscaler - Backend NestJS
+# =============================================================================
+# Auto-scaling du backend entre 3 et 6 replicas.
+# Metriques de declenchement :
+#   - CPU moyen > 70% → scale up
+#   - Memoire moyenne > 80% → scale up
+#
+# Politique de scaling :
+#   - Scale up rapide (30s stabilisation) pour absorber les pics
+#   - Scale down lent (5min stabilisation) pour eviter le flapping
+#   - Maximum 2 pods ajoutes par fenetre de 60s
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: production
+  labels:
+    app: backend
+    tier: application
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: application
+  annotations:
+    description: "Auto-scaling Backend NestJS - 3 a 6 replicas"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 3
+  maxReplicas: 6
+
+  metrics:
+    # CPU moyenne des pods > 70% → scale up
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Memoire moyenne des pods > 80% → scale up
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+  behavior:
+    # Scale UP rapide pour absorber les pics de charge
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        # Maximum 2 pods supplementaires par fenetre de 60s
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Max
+    # Scale DOWN lent pour eviter le flapping
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        # Maximum 1 pod supprime par fenetre de 120s
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+      selectPolicy: Min

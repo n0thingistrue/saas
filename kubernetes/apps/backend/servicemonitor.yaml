@@ -1,0 +1,147 @@
+# =============================================================================
+# ServiceMonitor + Alertes - Backend NestJS
+# =============================================================================
+# Monitoring du backend NestJS via Prometheus.
+# Le backend expose ses metriques sur /metrics (port 3000).
+#
+# Alertes :
+#   - BackendDown : aucun pod backend disponible
+#   - BackendHighErrorRate : taux d'erreurs HTTP 5xx > 5%
+#   - BackendHighLatency : p95 latence > 500ms
+#   - BackendDatabaseConnectionFailed : connexion DB perdue
+#   - BackendHighMemory : memoire > 85% des limites
+#   - BackendPodRestarted : redemarrage detecte
+# =============================================================================
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-monitor
+  namespace: monitoring
+  labels:
+    app: backend
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: monitoring-stack
+    prometheus: kube-prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - production
+  selector:
+    matchLabels:
+      app: backend
+      tier: application
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+---
+# =============================================================================
+# PrometheusRule - Alertes Backend
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: backend-alerts
+  namespace: monitoring
+  labels:
+    app: backend
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: monitoring-stack
+    prometheus: kube-prometheus
+spec:
+  groups:
+    - name: backend.rules
+      rules:
+        # CRITIQUE : Aucun pod backend disponible
+        - alert: BackendDown
+          expr: |
+            absent(up{job="backend", namespace="production"} == 1)
+            or count(up{job="backend", namespace="production"} == 1) == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: backend
+          annotations:
+            summary: "Backend NestJS est DOWN"
+            description: "Aucun pod backend ne repond. L'API REST et GraphQL sont indisponibles."
+
+        # CRITIQUE : Taux d'erreurs HTTP 5xx > 5%
+        - alert: BackendHighErrorRate
+          expr: |
+            (
+              sum(rate(http_requests_total{job="backend", namespace="production", status=~"5.."}[5m]))
+              /
+              sum(rate(http_requests_total{job="backend", namespace="production"}[5m]))
+            ) * 100 > 5
+          for: 2m
+          labels:
+            severity: critical
+            service: backend
+          annotations:
+            summary: "Backend taux d'erreurs 5xx > 5% ({{ $value | humanize }}%)"
+            description: "Le backend retourne trop d'erreurs serveur. Verifier les logs applicatifs."
+
+        # WARNING : Latence p95 > 500ms
+        - alert: BackendHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket{job="backend", namespace="production"}[5m])) by (le)
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            service: backend
+          annotations:
+            summary: "Backend latence p95 > 500ms ({{ $value | humanize }}s)"
+            description: "La latence du backend est elevee. Verifier les queries DB et le cache Redis."
+
+        # CRITIQUE : Connexion base de donnees perdue
+        - alert: BackendDatabaseConnectionFailed
+          expr: |
+            backend_database_connection_healthy{job="backend", namespace="production"} == 0
+          for: 30s
+          labels:
+            severity: critical
+            service: backend
+          annotations:
+            summary: "Backend ne peut plus se connecter a PostgreSQL"
+            description: "La connexion a la base de donnees est perdue. Verifier PostgreSQL Patroni."
+
+        # WARNING : Memoire > 85% des limites
+        - alert: BackendHighMemory
+          expr: |
+            container_memory_working_set_bytes{namespace="production", container="backend"}
+            / container_spec_memory_limit_bytes{namespace="production", container="backend"}
+            * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+            service: backend
+          annotations:
+            summary: "Backend memoire > 85% ({{ $value | humanize }}%)"
+            description: "Risque d'OOM. Verifier les fuites memoire ou augmenter les limites."
+
+        # INFO : Pod redemarrage detecte
+        - alert: BackendPodRestarted
+          expr: increase(kube_pod_container_status_restarts_total{namespace="production", container="backend"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: info
+            service: backend
+          annotations:
+            summary: "Backend pod a redemarré"
+            description: "Un pod backend a ete redemarré. Verifier les logs pour la cause."
+
+        # WARNING : Connexion Redis perdue
+        - alert: BackendRedisConnectionFailed
+          expr: |
+            backend_redis_connection_healthy{job="backend", namespace="production"} == 0
+          for: 1m
+          labels:
+            severity: warning
+            service: backend
+          annotations:
+            summary: "Backend ne peut plus se connecter a Redis"
+            description: "La connexion Redis est perdue. Le cache et les sessions sont impactes."

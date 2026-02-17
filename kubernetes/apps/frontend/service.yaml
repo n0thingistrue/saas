@@ -1,0 +1,32 @@
+# =============================================================================
+# Service - Frontend Next.js
+# =============================================================================
+# Service ClusterIP pour le frontend Next.js.
+# Le frontend est accessible uniquement depuis l'interieur du cluster :
+#   - Traefik Ingress → frontend:3001 (pages SSR + assets statiques)
+#
+# Le port 3001 est le port HTTP du serveur Next.js.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: production
+  labels:
+    app: frontend
+    tier: application
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: application
+  annotations:
+    description: "Service Frontend Next.js - SSR + SPA"
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+    tier: application
+  ports:
+    - name: http
+      port: 3001
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,117 @@
+# =============================================================================
+# ConfigMap - Samba Active Directory Configuration
+# =============================================================================
+# Configuration du Domain Controller Samba-AD :
+#   - Role : Active Directory Domain Controller
+#   - Domain : SAAS.LOCAL
+#   - Protocoles : LDAP (389), LDAPS (636), Kerberos (88), DNS (53), SMB (445)
+#
+# Samba-AD fournit :
+#   - Annuaire LDAP compatible Active Directory
+#   - Authentification Kerberos (SSO)
+#   - DNS integre pour la zone saas.local
+#   - Group Policies (GPO)
+#
+# Le backend NestJS s'authentifie via LDAP (passport-ldapauth)
+# et peut optionnellement utiliser Kerberos pour le SSO.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: samba-config
+  namespace: production
+  labels:
+    app: samba-ad
+    component: config
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/component: domain-controller
+    app.kubernetes.io/part-of: auth
+  annotations:
+    description: "Configuration Samba Active Directory - smb.conf"
+data:
+  smb.conf: |
+    # =========================================================================
+    # Samba AD Domain Controller - smb.conf
+    # =========================================================================
+    # Ce fichier est la configuration de base. Samba-AD genere des fichiers
+    # additionnels dans /var/lib/samba/private/ lors du provisioning.
+    # =========================================================================
+
+    [global]
+        # --- Identite du domaine ---
+        workgroup = SAAS
+        realm = SAAS.LOCAL
+        netbios name = DC1
+        server role = active directory domain controller
+        server string = SaaS Active Directory Domain Controller
+
+        # --- DNS ---
+        # Samba integre son propre serveur DNS pour la zone AD
+        dns forwarder = 1.1.1.1 8.8.8.8
+        server services = s3fs, rpc, nbt, wrepl, ldap, cldap, kdc, drepl, winbindd, ntp_signd, kcc, dnsupdate
+
+        # --- Reseau ---
+        interfaces = eth0 lo
+        bind interfaces only = yes
+
+        # --- Logging ---
+        # Niveau 1 en production (0=minimal, 3=debug, 10=trace)
+        log level = 1
+        log file = /var/log/samba/log.%m
+        max log size = 50000
+
+        # --- Securite LDAP ---
+        ldap server require strong auth = yes
+        # TLS pour LDAPS (port 636)
+        tls enabled = yes
+        tls keyfile = /var/lib/samba/private/tls/key.pem
+        tls certfile = /var/lib/samba/private/tls/cert.pem
+        tls cafile = /var/lib/samba/private/tls/ca.pem
+
+        # --- Securite generale ---
+        # Desactiver les protocoles obsoletes
+        server min protocol = SMB2
+        client min protocol = SMB2
+        ntlm auth = mschapv2-and-ntlmv2-only
+
+        # --- Kerberos ---
+        kerberos method = secrets and keytab
+        kerberos encryption types = strong
+
+        # --- Performance ---
+        # Optimisations pour un DC avec peu de clients
+        max smbd processes = 50
+        deadtime = 10
+
+    [netlogon]
+        path = /var/lib/samba/sysvol/saas.local/scripts
+        read only = No
+
+    [sysvol]
+        path = /var/lib/samba/sysvol
+        read only = No
+
+  # -------------------------------------------------------------------------
+  # krb5.conf - Configuration Kerberos client
+  # Necessaire pour les outils samba-tool et le backend NestJS
+  # -------------------------------------------------------------------------
+  krb5.conf: |
+    [libdefaults]
+        default_realm = SAAS.LOCAL
+        dns_lookup_realm = false
+        dns_lookup_kdc = true
+        ticket_lifetime = 24h
+        renew_lifetime = 7d
+        forwardable = true
+        rdns = false
+
+    [realms]
+        SAAS.LOCAL = {
+            kdc = samba-ad.production.svc.cluster.local
+            admin_server = samba-ad.production.svc.cluster.local
+            default_domain = saas.local
+        }
+
+    [domain_realm]
+        .saas.local = SAAS.LOCAL
+        saas.local = SAAS.LOCAL
