@@ -1,0 +1,247 @@
+# =============================================================================
+# ConfigMap - Patroni Configuration
+# =============================================================================
+# Patroni gere le failover automatique de PostgreSQL :
+#   - DCS (Distributed Configuration Store) via Kubernetes endpoints
+#   - Replication streaming synchrone (RPO ~0)
+#   - Failover automatique en < 30s
+#   - Callbacks de promotion pour notifier les applications
+#
+# Patroni utilise les endpoints Kubernetes comme DCS (pas besoin d'etcd externe).
+# C'est le mode recommande pour les petits clusters K3s.
+#
+# Tuning PostgreSQL adapte a l'architecture 2 nodes :
+#   - Primary (Node 1) : shared_buffers 2GB sur 8GB RAM alloues
+#   - Standby (Node 2) : shared_buffers 1GB sur 4GB RAM alloues
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: patroni-config
+  namespace: production
+  labels:
+    app: postgresql
+    component: patroni
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: patroni-config
+    app.kubernetes.io/part-of: database
+  annotations:
+    description: "Configuration Patroni pour PostgreSQL HA - failover automatique"
+data:
+  # -------------------------------------------------------------------------
+  # patroni.yml - Configuration principale Patroni
+  # -------------------------------------------------------------------------
+  patroni.yml: |
+    scope: postgresql-ha
+    name: ${HOSTNAME}
+    namespace: /service/
+
+    # --- Kubernetes DCS (Distributed Configuration Store) ---
+    # Patroni utilise les endpoints K8s pour l'election du leader
+    # Pas besoin d'etcd externe
+    kubernetes:
+      namespace: production
+      labels:
+        app: postgresql
+        cluster-name: postgresql-ha
+      use_endpoints: true
+      pod_ip: ${POD_IP}
+      ports:
+        - name: postgresql
+          port: 5432
+
+    # --- REST API Patroni ---
+    # Utilise pour les health checks et le monitoring
+    restapi:
+      listen: 0.0.0.0:8008
+      connect_address: ${POD_IP}:8008
+
+    # --- Parametres de timing ---
+    # ttl : duree de vie du lock leader (si expire, election)
+    # loop_wait : intervalle entre les checks
+    # retry_timeout : timeout pour les retries DCS
+    # maximum_lag_on_failover : lag max pour promouvoir un standby
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 30
+    maximum_lag_on_failover: 1048576  # 1MB - lag max acceptable
+
+    # --- Bootstrap ---
+    # Configuration initiale du cluster (premiere execution uniquement)
+    bootstrap:
+      dcs:
+        ttl: 30
+        loop_wait: 10
+        retry_timeout: 30
+        maximum_lag_on_failover: 1048576
+        synchronous_mode: true
+        synchronous_mode_strict: false
+        postgresql:
+          use_pg_rewind: true
+          use_slots: true
+          parameters:
+            # --- Replication ---
+            wal_level: replica
+            hot_standby: "on"
+            max_wal_senders: 5
+            max_replication_slots: 5
+            wal_log_hints: "on"
+            # Replication synchrone : garantit RPO = 0
+            synchronous_commit: "on"
+            synchronous_standby_names: "*"
+            # --- WAL ---
+            wal_keep_size: "1GB"
+            min_wal_size: "256MB"
+            max_wal_size: "1GB"
+            archive_mode: "on"
+            archive_command: "wal-g wal-push %p"
+            archive_timeout: 60
+            # --- Connexions ---
+            max_connections: 200
+            superuser_reserved_connections: 5
+            # --- Memoire (adapte 8GB RAM alloue au primary) ---
+            shared_buffers: "2GB"
+            effective_cache_size: "6GB"
+            work_mem: "16MB"
+            maintenance_work_mem: "512MB"
+            # --- WAL Buffers ---
+            wal_buffers: "64MB"
+            # --- Checkpoints ---
+            checkpoint_completion_target: 0.9
+            checkpoint_timeout: "10min"
+            # --- Planner ---
+            random_page_cost: 1.1
+            effective_io_concurrency: 200
+            # --- Parallelism ---
+            max_worker_processes: 4
+            max_parallel_workers_per_gather: 2
+            max_parallel_workers: 4
+            max_parallel_maintenance_workers: 2
+            # --- Logging ---
+            log_destination: "stderr"
+            logging_collector: "on"
+            log_directory: "/var/log/postgresql"
+            log_filename: "postgresql-%Y-%m-%d.log"
+            log_rotation_age: "1d"
+            log_rotation_size: "100MB"
+            log_min_duration_statement: 1000
+            log_checkpoints: "on"
+            log_connections: "on"
+            log_disconnections: "on"
+            log_lock_waits: "on"
+            log_temp_files: 0
+            log_autovacuum_min_duration: 0
+            log_line_prefix: "%t [%p]: user=%u,db=%d,app=%a,client=%h "
+            # --- Autovacuum ---
+            autovacuum: "on"
+            autovacuum_max_workers: 3
+            autovacuum_naptime: "1min"
+            # --- Securite ---
+            ssl: "off"
+            password_encryption: "scram-sha-256"
+            # --- Stats ---
+            shared_preload_libraries: "pg_stat_statements"
+            pg_stat_statements.max: 10000
+            pg_stat_statements.track: "all"
+            track_activity_query_size: 2048
+            track_io_timing: "on"
+
+      # Scripts d'initialisation (premiere execution uniquement)
+      initdb:
+        - encoding: UTF8
+        - data-checksums
+        - locale: en_US.UTF-8
+
+      # Scripts post-init (creations users, DB, extensions)
+      post_init: /docker-entrypoint-initdb.d/init-db.sh
+
+      pg_hba:
+        - local   all         postgres                     peer
+        - host    all         all          127.0.0.1/32    scram-sha-256
+        - host    all         all          10.42.0.0/16    scram-sha-256
+        - host    all         all          10.43.0.0/16    scram-sha-256
+        - host    replication replicator   10.42.0.0/16    scram-sha-256
+        - host    replication replicator   10.10.0.0/16    scram-sha-256
+
+    # --- PostgreSQL Runtime ---
+    postgresql:
+      listen: 0.0.0.0:5432
+      connect_address: ${POD_IP}:5432
+      data_dir: /var/lib/postgresql/data/pgdata
+      bin_dir: /usr/lib/postgresql/16/bin
+      config_dir: /var/lib/postgresql/data/pgdata
+      pgpass: /tmp/pgpass
+      authentication:
+        superuser:
+          username: postgres
+          password: ${POSTGRES_PASSWORD}
+        replication:
+          username: replicator
+          password: ${POSTGRES_REPLICATION_PASSWORD}
+      parameters:
+        unix_socket_directories: "/var/run/postgresql"
+      pg_hba:
+        - local   all         postgres                     peer
+        - host    all         all          127.0.0.1/32    scram-sha-256
+        - host    all         all          10.42.0.0/16    scram-sha-256
+        - host    all         all          10.43.0.0/16    scram-sha-256
+        - host    replication replicator   10.42.0.0/16    scram-sha-256
+        - host    replication replicator   10.10.0.0/16    scram-sha-256
+      callbacks:
+        on_start: /callbacks/on_start.sh
+        on_stop: /callbacks/on_stop.sh
+        on_role_change: /callbacks/on_role_change.sh
+
+    # --- Tags ---
+    tags:
+      nofailover: false
+      noloadbalance: false
+      clonefrom: false
+      nosync: false
+
+  # -------------------------------------------------------------------------
+  # WAL-G environment (archive PostgreSQL vers S3)
+  # -------------------------------------------------------------------------
+  walg-env.sh: |
+    #!/bin/bash
+    export WALG_S3_PREFIX="${WALG_S3_PREFIX}"
+    export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+    export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
+    export AWS_ENDPOINT="${AWS_ENDPOINT}"
+    export AWS_S3_FORCE_PATH_STYLE="true"
+    export AWS_REGION="fsn1"
+    export WALG_COMPRESSION_METHOD="lz4"
+    export PGDATA="/var/lib/postgresql/data/pgdata"
+    export PGHOST="/var/run/postgresql"
+    export PGUSER="postgres"
+
+  # -------------------------------------------------------------------------
+  # Callbacks Patroni (notifications lors des changements de role)
+  # -------------------------------------------------------------------------
+  on_role_change.sh: |
+    #!/bin/bash
+    # Callback execute lors d'un changement de role (primary ↔ standby)
+    # $1 = action (on_start, on_stop, on_restart, on_role_change)
+    # $2 = role (master, replica)
+    # $3 = cluster_name
+    ACTION="$1"
+    ROLE="$2"
+    CLUSTER="$3"
+
+    echo "[PATRONI CALLBACK] $(date '+%Y-%m-%d %H:%M:%S') Action=$ACTION Role=$ROLE Cluster=$CLUSTER"
+
+    if [ "$ROLE" = "master" ]; then
+      echo "[PATRONI] Ce node est maintenant PRIMARY"
+      # Configurer WAL-G archiving (uniquement sur primary)
+      source /etc/walg/walg-env.sh
+    elif [ "$ROLE" = "replica" ]; then
+      echo "[PATRONI] Ce node est maintenant STANDBY"
+    fi
+
+  on_start.sh: |
+    #!/bin/bash
+    echo "[PATRONI] PostgreSQL demarre - $(date '+%Y-%m-%d %H:%M:%S')"
+
+  on_stop.sh: |
+    #!/bin/bash
+    echo "[PATRONI] PostgreSQL arrete - $(date '+%Y-%m-%d %H:%M:%S')"

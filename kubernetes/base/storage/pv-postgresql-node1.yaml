@@ -1,0 +1,84 @@
+# =============================================================================
+# PV + PVC - PostgreSQL Primary (Node 1)
+# =============================================================================
+# Volume persistant pour les donnees PostgreSQL Primary.
+# Monte sur le volume Hetzner attache au Node 1.
+#
+# Le chemin /mnt/HC_Volume_<id> est cree automatiquement par Hetzner
+# lors de l'attachement du volume au serveur.
+# Remplacer <VOLUME_ID> par l'ID reel apres terraform apply.
+#
+# Capacite : 50GB (extensible via Hetzner API + resize PV)
+# Performance : NVMe Hetzner (~100k IOPS)
+# =============================================================================
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-postgresql-primary
+  labels:
+    app: postgresql
+    role: primary
+    node: node1
+    type: local-storage
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: primary
+    app.kubernetes.io/part-of: database
+  annotations:
+    description: "Volume Hetzner pour PostgreSQL Primary sur Node 1"
+    volume.hetzner.cloud/id: "REPLACE_WITH_VOLUME_ID"
+spec:
+  capacity:
+    # 50GB provisionnes par Terraform (variable volume_postgresql_size)
+    storage: 50Gi
+  accessModes:
+    # ReadWriteOnce : un seul node peut monter le volume en ecriture
+    # C'est le mode requis pour PostgreSQL (pas de multi-attach)
+    - ReadWriteOnce
+  # Retain : les donnees sont conservees meme si le PVC est supprime
+  # Protection contre les suppressions accidentelles
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  # Contrainte de node : ce PV est uniquement disponible sur Node 1
+  # car le volume Hetzner est physiquement attache a Node 1
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: node-role
+              operator: In
+              values: ["control-plane"]
+            - key: node-size
+              operator: In
+              values: ["large"]
+  local:
+    # Chemin du volume Hetzner monte sur Node 1
+    # Remplacer par le chemin reel (output Terraform : volume_pg_primary_path)
+    path: /mnt/HC_Volume_postgresql_primary
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-postgresql-primary
+  namespace: production
+  labels:
+    app: postgresql
+    role: primary
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: primary
+    app.kubernetes.io/part-of: database
+  annotations:
+    description: "PVC PostgreSQL Primary - 50GB sur Node 1"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 50Gi
+  # Selectionner explicitement le PV par label
+  selector:
+    matchLabels:
+      app: postgresql
+      role: primary
+      node: node1

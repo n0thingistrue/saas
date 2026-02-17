@@ -1,0 +1,346 @@
+# =============================================================================
+# Namespaces - Isolation logique des services
+# =============================================================================
+# Chaque namespace isole un groupe de services avec ses propres :
+#   - ResourceQuotas (limites globales)
+#   - LimitRanges (limites par pod/conteneur)
+#   - NetworkPolicies (isolation réseau)
+#   - RBAC (permissions d'accès)
+#
+# Ordre de priorité :
+#   production > monitoring > security > ingress > staging > backup
+# =============================================================================
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    name: production
+    environment: production
+    tier: application
+    managed-by: kubectl
+    # Pod Security Standards : baseline en enforcement, restricted en audit
+    pod-security.kubernetes.io/enforce: "baseline"
+    pod-security.kubernetes.io/enforce-version: "latest"
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: "latest"
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: "latest"
+  annotations:
+    description: "Services applicatifs de production (frontend, backend, databases, cache, auth)"
+    owner: "infra-team"
+    sla: "99.5%"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    name: staging
+    environment: staging
+    tier: application
+    managed-by: kubectl
+    pod-security.kubernetes.io/enforce: "baseline"
+    pod-security.kubernetes.io/enforce-version: "latest"
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: "latest"
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: "latest"
+  annotations:
+    description: "Environnement de staging pour tests pre-production (Node 2)"
+    owner: "dev-team"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+    environment: production
+    tier: observability
+    managed-by: kubectl
+    # Exemption PSS pour monitoring (Promtail a besoin de hostPath)
+    pod-security.kubernetes.io/enforce: "privileged"
+    pod-security.kubernetes.io/enforce-version: "latest"
+    pod-security.kubernetes.io/audit: "baseline"
+    pod-security.kubernetes.io/audit-version: "latest"
+    pod-security.kubernetes.io/warn: "baseline"
+    pod-security.kubernetes.io/warn-version: "latest"
+  annotations:
+    description: "Stack observabilite - Prometheus, Grafana, Loki, Promtail, AlertManager"
+    owner: "infra-team"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security
+  labels:
+    name: security
+    environment: production
+    tier: security
+    managed-by: kubectl
+    pod-security.kubernetes.io/enforce: "privileged"
+    pod-security.kubernetes.io/enforce-version: "latest"
+    pod-security.kubernetes.io/audit: "baseline"
+    pod-security.kubernetes.io/audit-version: "latest"
+    pod-security.kubernetes.io/warn: "baseline"
+    pod-security.kubernetes.io/warn-version: "latest"
+  annotations:
+    description: "Services de securite - Sealed Secrets controller, Wazuh agent"
+    owner: "infra-team"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress
+  labels:
+    name: ingress
+    environment: production
+    tier: networking
+    managed-by: kubectl
+    # Traefik a besoin de ports privilegies (80, 443)
+    pod-security.kubernetes.io/enforce: "privileged"
+    pod-security.kubernetes.io/enforce-version: "latest"
+    pod-security.kubernetes.io/audit: "baseline"
+    pod-security.kubernetes.io/audit-version: "latest"
+    pod-security.kubernetes.io/warn: "baseline"
+    pod-security.kubernetes.io/warn-version: "latest"
+  annotations:
+    description: "Ingress controllers - Traefik, cert-manager, WAF ModSecurity"
+    owner: "infra-team"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backup
+  labels:
+    name: backup
+    environment: production
+    tier: operations
+    managed-by: kubectl
+    pod-security.kubernetes.io/enforce: "baseline"
+    pod-security.kubernetes.io/enforce-version: "latest"
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: "latest"
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: "latest"
+  annotations:
+    description: "CronJobs de sauvegarde - WAL-G, Redis snapshots, Samba backup"
+    owner: "infra-team"
+---
+# =============================================================================
+# ResourceQuotas - Limites globales par namespace
+# =============================================================================
+# Empechent un namespace de consommer toutes les ressources du cluster.
+# Les quotas sont calcules selon la repartition :
+#   Node 1 : 16 vCPU, 32GB RAM (dont ~4GB pour K3s + systeme)
+#   Node 2 : 4 vCPU, 16GB RAM (dont ~1.5GB pour K3s + systeme)
+#   Total disponible : ~20 vCPU, ~42.5GB RAM (theorique, avec overcommit)
+# =============================================================================
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+  labels:
+    environment: production
+  annotations:
+    description: "Quota production - majorite des ressources cluster"
+spec:
+  hard:
+    requests.cpu: "12"
+    requests.memory: "24Gi"
+    limits.cpu: "16"
+    limits.memory: "30Gi"
+    pods: "50"
+    services: "20"
+    persistentvolumeclaims: "10"
+    secrets: "30"
+    configmaps: "30"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: staging-quota
+  namespace: staging
+  labels:
+    environment: staging
+  annotations:
+    description: "Quota staging - ressources limitees sur Node 2"
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: "4Gi"
+    limits.cpu: "3"
+    limits.memory: "6Gi"
+    pods: "20"
+    services: "10"
+    persistentvolumeclaims: "5"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: monitoring-quota
+  namespace: monitoring
+  labels:
+    environment: production
+  annotations:
+    description: "Quota monitoring - Prometheus, Grafana, Loki, AlertManager"
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: "4Gi"
+    limits.cpu: "3"
+    limits.memory: "6Gi"
+    pods: "15"
+    persistentvolumeclaims: "5"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: security-quota
+  namespace: security
+  labels:
+    environment: production
+  annotations:
+    description: "Quota security - Sealed Secrets, Wazuh"
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: "3Gi"
+    limits.cpu: "2"
+    limits.memory: "4Gi"
+    pods: "10"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: backup-quota
+  namespace: backup
+  labels:
+    environment: production
+  annotations:
+    description: "Quota backup - CronJobs de sauvegarde"
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: "2Gi"
+    limits.cpu: "2"
+    limits.memory: "4Gi"
+    pods: "10"
+---
+# =============================================================================
+# LimitRanges - Limites par defaut par conteneur
+# =============================================================================
+# Si un pod ne specifie pas de requests/limits, ces valeurs s'appliquent.
+# Empeche les pods sans limites de consommer toute la memoire (OOM).
+# =============================================================================
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: production-limits
+  namespace: production
+  labels:
+    environment: production
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "4"
+        memory: "8Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+    - type: Pod
+      max:
+        cpu: "8"
+        memory: "16Gi"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: staging-limits
+  namespace: staging
+  labels:
+    environment: staging
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "250m"
+        memory: "256Mi"
+      defaultRequest:
+        cpu: "50m"
+        memory: "64Mi"
+      max:
+        cpu: "1"
+        memory: "2Gi"
+      min:
+        cpu: "25m"
+        memory: "32Mi"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: monitoring-limits
+  namespace: monitoring
+  labels:
+    environment: production
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "300m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "50m"
+        memory: "64Mi"
+      max:
+        cpu: "2"
+        memory: "4Gi"
+      min:
+        cpu: "25m"
+        memory: "32Mi"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: security-limits
+  namespace: security
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "200m"
+        memory: "256Mi"
+      defaultRequest:
+        cpu: "50m"
+        memory: "64Mi"
+      max:
+        cpu: "1"
+        memory: "3Gi"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: backup-limits
+  namespace: backup
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "2"
+        memory: "4Gi"

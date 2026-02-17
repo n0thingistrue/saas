@@ -1,0 +1,172 @@
+# =============================================================================
+# RBAC ArgoCD - Permissions GitOps
+# =============================================================================
+# ArgoCD a besoin de permissions pour synchroniser les ressources
+# depuis le repository Git vers le cluster.
+#
+# Strategie :
+#   - ArgoCD a son propre namespace (argocd)
+#   - Il peut deployer dans production, staging, monitoring, security
+#   - Il ne peut PAS modifier le namespace kube-system
+#   - Il ne peut PAS modifier ses propres RBAC (prevention d'escalade)
+# =============================================================================
+---
+# -----------------------------------------------------------------------------
+# ServiceAccount : ArgoCD Application Controller
+# C'est le composant qui applique les manifests dans le cluster
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-application-controller
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/component: application-controller
+    app.kubernetes.io/part-of: argocd
+  annotations:
+    description: "ServiceAccount ArgoCD - deploiement GitOps dans les namespaces cibles"
+---
+# -----------------------------------------------------------------------------
+# ClusterRole : ArgoCD Application Controller
+# Permissions de deploiement dans les namespaces autorises
+# -----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argocd-application-controller
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/component: application-controller
+    app.kubernetes.io/part-of: argocd
+rules:
+  # Ressources core : gestion complete
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - endpoints
+      - configmaps
+      - secrets
+      - persistentvolumeclaims
+      - serviceaccounts
+      - events
+      - namespaces
+    verbs: ["*"]
+  # Apps : deployments, statefulsets, daemonsets
+  - apiGroups: ["apps"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Batch : jobs, cronjobs
+  - apiGroups: ["batch"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Autoscaling : HPA
+  - apiGroups: ["autoscaling"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Networking : ingress, networkpolicies
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Policy : PodDisruptionBudget
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["*"]
+  # RBAC : roles et bindings dans les namespaces (pas cluster-level)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["*"]
+  # RBAC Cluster : lecture seule (pour verifier l'etat, pas modifier)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["get", "list", "watch"]
+  # Storage
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  # CRDs Traefik
+  - apiGroups: ["traefik.io", "traefik.containo.us"]
+    resources: ["*"]
+    verbs: ["*"]
+  # CRDs cert-manager
+  - apiGroups: ["cert-manager.io", "acme.cert-manager.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  # CRDs Sealed Secrets
+  - apiGroups: ["bitnami.com"]
+    resources: ["sealedsecrets"]
+    verbs: ["*"]
+  # CRDs Prometheus Operator
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["*"]
+    verbs: ["*"]
+  # CRDs ArgoCD
+  - apiGroups: ["argoproj.io"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+# ClusterRoleBinding : ArgoCD Application Controller
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argocd-application-controller
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/part-of: argocd
+subjects:
+  - kind: ServiceAccount
+    name: argocd-application-controller
+    namespace: argocd
+roleRef:
+  kind: ClusterRole
+  name: argocd-application-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+# -----------------------------------------------------------------------------
+# ServiceAccount : ArgoCD Server (UI/API)
+# Permissions de lecture pour afficher l'etat des applications
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-server
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: argocd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argocd-server
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: argocd
+rules:
+  # Lecture de toutes les ressources pour le dashboard
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  # Gestion des applications ArgoCD
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "applicationsets", "appprojects"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argocd-server
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/part-of: argocd
+subjects:
+  - kind: ServiceAccount
+    name: argocd-server
+    namespace: argocd
+roleRef:
+  kind: ClusterRole
+  name: argocd-server
+  apiGroup: rbac.authorization.k8s.io

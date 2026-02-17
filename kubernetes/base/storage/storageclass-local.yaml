@@ -1,0 +1,57 @@
+# =============================================================================
+# StorageClasses - Stockage persistant
+# =============================================================================
+# Deux StorageClasses pour les differents besoins de stockage :
+#
+# 1. local-storage : Volumes Hetzner montes sur les nodes
+#    - Performances NVMe locales (latence minimale)
+#    - Pas de migration automatique entre nodes (bound to node)
+#    - Ideal pour PostgreSQL, Redis, Prometheus (I/O intensif)
+#    - Retention : les PV persistent apres suppression du PVC
+#
+# 2. local-path (built-in K3s) : Stockage local dynamique
+#    - Provisionne automatiquement via Rancher local-path-provisioner
+#    - Pour les donnees moins critiques (logs, cache temporaire)
+#
+# Les volumes Hetzner Cloud sont montes a la creation du serveur
+# sur /mnt/HC_Volume_<id>. On cree des PV manuels pointant vers ces mounts.
+# =============================================================================
+---
+# StorageClass pour les volumes locaux Hetzner (provisionnement manuel)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+  labels:
+    app.kubernetes.io/name: storage
+    app.kubernetes.io/component: local-storage
+  annotations:
+    description: "Volumes Hetzner Cloud montes localement - haute performance NVMe"
+    storageclass.kubernetes.io/is-default-class: "false"
+# Pas de provisioner : les PV sont crees manuellement
+# car les volumes Hetzner sont pre-provisionnes par Terraform
+provisioner: kubernetes.io/no-provisioner
+# Retain : ne pas supprimer les donnees quand le PVC est supprime
+# Les donnees sont conservees et doivent etre nettoyees manuellement
+reclaimPolicy: Retain
+# WaitForFirstConsumer : le PV n'est bind que quand un pod le consomme
+# Cela garantit que le PV est bind au bon node (celui ou le volume est monte)
+volumeBindingMode: WaitForFirstConsumer
+# Pas d'expansion de volume automatique
+# Pour agrandir : modifier le volume Hetzner, puis resize le FS, puis le PV
+allowVolumeExpansion: false
+---
+# StorageClass pour le provisionnement rapide (non-critique)
+# Utilise le local-path-provisioner inclus dans K3s
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path-fast
+  labels:
+    app.kubernetes.io/name: storage
+    app.kubernetes.io/component: local-path
+  annotations:
+    description: "Provisionnement automatique sur disque local K3s - non-critique"
+provisioner: rancher.io/local-path
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer

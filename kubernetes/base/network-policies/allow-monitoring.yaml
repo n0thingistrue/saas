@@ -1,0 +1,218 @@
+# =============================================================================
+# NetworkPolicy - Allow Monitoring
+# =============================================================================
+# Autorise Prometheus a scraper les metriques de tous les pods dans
+# tous les namespaces applicatifs.
+#
+# Prometheus identifie les targets via les ServiceMonitors et les
+# annotations (prometheus.io/scrape: "true").
+#
+# Ports de metriques standards :
+#   - /metrics sur le port applicatif ou un port dedie
+#   - Port 9090 (Prometheus), 3000 (Grafana), 3100 (Loki)
+# =============================================================================
+---
+# Production : autoriser le scraping Prometheus depuis monitoring
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scraping
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-monitoring
+    policy-type: monitoring
+  annotations:
+    description: "Autorise Prometheus (namespace monitoring) a scraper les metriques"
+spec:
+  podSelector: {}  # Tous les pods de production
+  policyTypes:
+    - Ingress
+  ingress:
+    # Autoriser depuis le namespace monitoring
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        # Port metriques NestJS (backend)
+        - protocol: TCP
+          port: 3000
+        # Port metriques Next.js (frontend)
+        - protocol: TCP
+          port: 3001
+        # Port metriques PostgreSQL (postgres_exporter)
+        - protocol: TCP
+          port: 9187
+        # Port metriques Redis (redis_exporter)
+        - protocol: TCP
+          port: 9121
+        # Port metriques Patroni
+        - protocol: TCP
+          port: 8008
+        # Port metriques generique
+        - protocol: TCP
+          port: 9090
+---
+# Staging : autoriser le scraping Prometheus
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scraping
+  namespace: staging
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-monitoring
+    policy-type: monitoring
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 3000
+        - protocol: TCP
+          port: 3001
+        - protocol: TCP
+          port: 9187
+        - protocol: TCP
+          port: 9121
+---
+# Monitoring interne : autoriser les communications entre composants
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-internal
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-monitoring
+    policy-type: monitoring
+  annotations:
+    description: "Autorise les communications internes entre composants monitoring"
+spec:
+  podSelector: {}  # Tous les pods monitoring
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Autoriser le trafic intra-namespace (Prometheus → Grafana, etc.)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090   # Prometheus
+        - protocol: TCP
+          port: 9093   # AlertManager
+        - protocol: TCP
+          port: 3000   # Grafana
+        - protocol: TCP
+          port: 3100   # Loki
+        - protocol: TCP
+          port: 9080   # Promtail
+    # Autoriser Traefik/Ingress a atteindre Grafana
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress
+      ports:
+        - protocol: TCP
+          port: 3000   # Grafana
+  egress:
+    # Scraping vers tous les namespaces (Prometheus)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: production
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: staging
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: security
+    # Intra-namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+    # HTTPS sortant pour AlertManager (webhooks Slack, email)
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 587   # SMTP
+---
+# Ingress : autoriser le scraping Prometheus
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scraping
+  namespace: ingress
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-monitoring
+    policy-type: monitoring
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        # Metriques Traefik
+        - protocol: TCP
+          port: 8082
+        # Metriques cert-manager
+        - protocol: TCP
+          port: 9402
+---
+# Security : autoriser le scraping Prometheus
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scraping
+  namespace: security
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-monitoring
+    policy-type: monitoring
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 1515   # Wazuh agent

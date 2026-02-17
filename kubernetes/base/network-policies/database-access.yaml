@@ -1,0 +1,329 @@
+# =============================================================================
+# NetworkPolicy - Database Access Control
+# =============================================================================
+# Controle d'acces fin aux bases de donnees et au cache.
+# Seuls les pods autorises peuvent se connecter a PostgreSQL, Redis
+# et Samba-AD.
+#
+# Principe du moindre privilege :
+#   PostgreSQL (5432) : Backend uniquement
+#   Redis (6379)      : Backend + Frontend (sessions SSR)
+#   Samba-AD (389/636): Backend uniquement (auth LDAP)
+#   Patroni (8008)    : Inter-pods PostgreSQL + Prometheus
+#   Sentinel (26379)  : Inter-pods Redis
+#
+# Les connexions directes depuis d'autres pods sont refusees.
+# =============================================================================
+---
+# -----------------------------------------------------------------------------
+# PostgreSQL : acces restreint
+# Seuls Backend et les pods PostgreSQL (replication) peuvent se connecter
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgresql-access
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: database-access
+    policy-type: database
+  annotations:
+    description: "Restreint l'acces a PostgreSQL au backend et a la replication"
+spec:
+  podSelector:
+    matchLabels:
+      app: postgresql
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Backend NestJS → PostgreSQL (requetes SQL)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+              tier: application
+      ports:
+        - protocol: TCP
+          port: 5432
+    # PostgreSQL inter-pods (streaming replication Patroni)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432   # Replication
+        - protocol: TCP
+          port: 8008   # Patroni REST API
+    # Prometheus scraping (metriques postgres_exporter)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9187   # postgres_exporter
+        - protocol: TCP
+          port: 8008   # Patroni metriques
+    # Backup CronJobs
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: backup
+      ports:
+        - protocol: TCP
+          port: 5432
+  egress:
+    # PostgreSQL replication entre pods
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 8008
+    # HTTPS sortant pour WAL-G (upload WAL vers S3)
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+# -----------------------------------------------------------------------------
+# Redis : acces restreint
+# Backend et Frontend (sessions Next.js SSR) peuvent se connecter
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-access
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: database-access
+    policy-type: cache
+  annotations:
+    description: "Restreint l'acces a Redis au backend, frontend et a la replication"
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Backend NestJS → Redis (cache, sessions, queues)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+              tier: application
+      ports:
+        - protocol: TCP
+          port: 6379
+    # Frontend Next.js → Redis (cache SSR, sessions)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+              tier: application
+      ports:
+        - protocol: TCP
+          port: 6379
+    # Redis inter-pods (replication master ↔ replica)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379    # Data
+        - protocol: TCP
+          port: 26379   # Sentinel
+    # Prometheus scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9121    # redis_exporter
+    # Backup CronJobs
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: backup
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress:
+    # Redis replication entre pods
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 26379
+---
+# -----------------------------------------------------------------------------
+# Samba-AD : acces restreint
+# Seul le Backend peut interroger LDAP/Kerberos
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: samba-ad-access
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: database-access
+    policy-type: auth
+  annotations:
+    description: "Restreint l'acces a Samba-AD au backend (LDAP/Kerberos)"
+spec:
+  podSelector:
+    matchLabels:
+      app: samba-ad
+  policyTypes:
+    - Ingress
+  ingress:
+    # Backend NestJS → Samba-AD (authentification LDAP)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+              tier: application
+      ports:
+        - protocol: TCP
+          port: 389    # LDAP
+        - protocol: TCP
+          port: 636    # LDAPS (TLS)
+        - protocol: TCP
+          port: 88     # Kerberos
+        - protocol: UDP
+          port: 88     # Kerberos UDP
+        - protocol: TCP
+          port: 445    # SMB (optionnel)
+    # Prometheus scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9100    # node_exporter si present
+---
+# -----------------------------------------------------------------------------
+# Backend : egress vers databases autorise
+# Le backend a besoin de sortir vers PG, Redis, Samba et HTTPS
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-egress
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: database-access
+    policy-type: application
+  annotations:
+    description: "Backend peut acceder a PostgreSQL, Redis, Samba-AD et HTTPS"
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+    - Egress
+  egress:
+    # PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 26379   # Sentinel discovery
+    # Samba-AD
+    - to:
+        - podSelector:
+            matchLabels:
+              app: samba-ad
+      ports:
+        - protocol: TCP
+          port: 389
+        - protocol: TCP
+          port: 636
+        - protocol: TCP
+          port: 88
+        - protocol: UDP
+          port: 88
+    # HTTPS sortant (APIs tierces, webhooks)
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+# -----------------------------------------------------------------------------
+# Frontend : egress vers backend et Redis
+# -----------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-egress
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: database-access
+    policy-type: application
+  annotations:
+    description: "Frontend peut acceder au backend et a Redis (cache SSR)"
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Egress
+  egress:
+    # Backend NestJS (API calls)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Redis (cache SSR)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # HTTPS sortant (CDN, APIs externes)
+    - ports:
+        - protocol: TCP
+          port: 443

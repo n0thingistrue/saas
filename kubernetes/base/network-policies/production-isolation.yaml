@@ -1,0 +1,158 @@
+# =============================================================================
+# NetworkPolicy - Production Isolation
+# =============================================================================
+# Isole completement le namespace production du namespace staging.
+# Staging ne peut en aucun cas acceder aux services de production
+# (base de donnees, cache, API).
+#
+# Flux autorises vers production :
+#   - Ingress (Traefik) → Frontend / Backend (trafic utilisateur)
+#   - Monitoring (Prometheus) → Tous les pods (scraping metriques)
+#   - Backup → PostgreSQL (backup WAL-G)
+#
+# Flux interdits :
+#   - Staging → Production (isolation stricte)
+#   - Tout autre namespace non autorise
+# =============================================================================
+---
+# Production : autoriser le trafic depuis ingress (Traefik)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-apps
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: production-isolation
+    policy-type: application
+  annotations:
+    description: "Autorise Traefik a router le trafic vers frontend et backend"
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["frontend", "backend"]
+  policyTypes:
+    - Ingress
+  ingress:
+    # Depuis le namespace ingress (Traefik uniquement)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        # Frontend Next.js
+        - protocol: TCP
+          port: 3001
+        # Backend NestJS
+        - protocol: TCP
+          port: 3000
+---
+# Production : autoriser le trafic interne entre composants production
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-production-internal
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: production-isolation
+    policy-type: application
+  annotations:
+    description: "Autorise les communications internes dans production"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Autoriser tout le trafic intra-namespace production
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: production
+  egress:
+    # Autoriser tout le trafic intra-namespace production
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: production
+---
+# Production : autoriser les backups depuis le namespace backup
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backup-access
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: production-isolation
+    policy-type: operations
+  annotations:
+    description: "Autorise les CronJobs de backup a acceder a PostgreSQL et Redis"
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["postgresql", "redis"]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: backup
+      ports:
+        # PostgreSQL
+        - protocol: TCP
+          port: 5432
+        # Redis
+        - protocol: TCP
+          port: 6379
+---
+# Staging : isolation complete, acces uniquement depuis ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-staging
+  namespace: staging
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: staging-isolation
+    policy-type: application
+  annotations:
+    description: "Staging n'est accessible que depuis Traefik et en interne"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Depuis Traefik
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+    # Intra-namespace staging
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: staging
+  egress:
+    # Intra-namespace staging uniquement
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: staging
+    # HTTPS sortant (APIs externes, registries)
+    - ports:
+        - protocol: TCP
+          port: 443

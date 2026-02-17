@@ -1,0 +1,66 @@
+# =============================================================================
+# PV + PVC - Redis (Node 1)
+# =============================================================================
+# Volume pour la persistance Redis (RDB snapshots + AOF).
+# Redis est principalement in-memory mais les snapshots RDB permettent
+# un recovery rapide sans avoir a rechauffer le cache depuis PostgreSQL.
+#
+# 10GB suffit car Redis ne stocke que les snapshots (donnees compressees).
+# =============================================================================
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-redis-master
+  labels:
+    app: redis
+    role: master
+    node: node1
+    type: local-storage
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: master
+    app.kubernetes.io/part-of: cache
+  annotations:
+    description: "Volume Hetzner pour Redis Master sur Node 1"
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: node-role
+              operator: In
+              values: ["control-plane"]
+  local:
+    path: /mnt/HC_Volume_redis
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-redis-master
+  namespace: production
+  labels:
+    app: redis
+    role: master
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: master
+    app.kubernetes.io/part-of: cache
+  annotations:
+    description: "PVC Redis Master - 10GB sur Node 1"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 10Gi
+  selector:
+    matchLabels:
+      app: redis
+      role: master
+      node: node1

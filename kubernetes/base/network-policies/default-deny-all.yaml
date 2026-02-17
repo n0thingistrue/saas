@@ -1,0 +1,165 @@
+# =============================================================================
+# NetworkPolicy - Default Deny All
+# =============================================================================
+# Politique Zero Trust : par defaut, AUCUN trafic n'est autorise
+# entre les pods. Chaque flux doit etre explicitement autorise.
+#
+# Ces politiques sont appliquees dans chaque namespace applicatif.
+# Le trafic est ensuite ouvert selectivement par les autres NetworkPolicies.
+#
+# Note : kube-system est exempte (gere par K3s).
+# =============================================================================
+---
+# Production : deny all ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+  annotations:
+    description: "Bloque tout le trafic entrant par defaut dans production"
+spec:
+  podSelector: {}  # S'applique a TOUS les pods du namespace
+  policyTypes:
+    - Ingress
+---
+# Production : deny all egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+  annotations:
+    description: "Bloque tout le trafic sortant par defaut dans production"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+---
+# Staging : deny all ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: staging
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Staging : deny all egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: staging
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+---
+# Monitoring : deny all ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Monitoring : deny all egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+---
+# Security : deny all ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: security
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Security : deny all egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: security
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+---
+# Backup : deny all ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Backup : deny all egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress

@@ -1,0 +1,44 @@
+# =============================================================================
+# Variables Staging
+# =============================================================================
+# Environnement de staging avec des serveurs plus petits pour réduire les coûts.
+# Utilisé pour les tests avant déploiement en production.
+# =============================================================================
+
+hcloud_token = "VOTRE_TOKEN_HETZNER_ICI"
+
+environment  = "staging"
+project_name = "saas"
+location     = "fsn1"
+
+# Serveurs plus petits pour staging
+node1_type   = "ccx13"   # 2 vCPU, 8GB RAM
+node2_type   = "ccx13"   # 2 vCPU, 8GB RAM
+server_image = "debian-12"
+
+ssh_key_name = "votre-cle-ssh"
+
+network_cidr     = "10.20.0.0/16"
+subnet_cidr      = "10.20.0.0/24"
+node1_private_ip = "10.20.0.2"
+node2_private_ip = "10.20.0.3"
+
+lb_type = "lb11"
+
+# Volumes réduits pour staging
+volume_postgresql_size         = 20
+volume_postgresql_standby_size = 20
+volume_redis_size              = 5
+volume_samba_size              = 10
+volume_monitoring_size         = 10
+
+domain = "staging.votre-domaine.com"
+email  = "admin@votre-domaine.com"
+
+s3_bucket_name = "saas-backups-staging"
+
+labels = {
+  project     = "saas"
+  managed_by  = "terraform"
+  environment = "staging"
+}

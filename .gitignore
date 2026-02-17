@@ -1,0 +1,74 @@
+# Terraform
+terraform/.terraform/
+terraform/**/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/**/*.tfstate
+terraform/**/*.tfstate.*
+terraform/*.tfplan
+terraform/**/*.tfplan
+terraform/.terraform.lock.hcl
+terraform/**/.terraform.lock.hcl
+
+# Variables sensibles (ne JAMAIS commiter)
+*.tfvars
+!*.tfvars.example
+*.auto.tfvars
+
+# Secrets non chiffrés
+**/secrets/*.yaml
+!**/secrets/*.sealed.yaml
+!**/secrets/README.md
+*.key
+*.pem
+*.crt
+!*.example.key
+
+# Kubeconfig
+kubeconfig*
+.kube/
+
+# SSH
+id_rsa*
+*.pub
+
+# WireGuard
+security/wireguard/*.conf
+security/wireguard/*.key
+!security/wireguard/*.example.conf
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Node (apps)
+node_modules/
+dist/
+.next/
+coverage/
+
+# Logs
+*.log
+logs/
+
+# Backup temporaires
+backup/tmp/
+*.bak
+*.backup
+
+# Tests results
+scripts/testing/results/
+scripts/compliance/reports/

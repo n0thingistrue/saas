@@ -1,0 +1,39 @@
+# =============================================================================
+# Kustomization - Base Kubernetes
+# =============================================================================
+# Applique toutes les ressources de base dans le bon ordre.
+# Usage : kubectl apply -k kubernetes/base/
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # 1. Namespaces, ResourceQuotas, LimitRanges
+  - namespaces/00-namespaces.yaml
+  # 2. RBAC
+  - rbac/01-rbac-admin.yaml
+  - rbac/02-rbac-developer.yaml
+  - rbac/03-rbac-monitoring.yaml
+  - rbac/04-rbac-argocd.yaml
+  # 3. Pod Security (PDB)
+  - pod-security/pod-security-standards.yaml
+  # 4. Storage Classes + PV/PVC
+  - storage/storageclass-local.yaml
+  - storage/pv-postgresql-node1.yaml
+  - storage/pv-postgresql-node2.yaml
+  - storage/pv-redis.yaml
+  - storage/pv-samba-ad.yaml
+  - storage/pv-monitoring.yaml
+  # 5. Network Policies
+  - network-policies/default-deny-all.yaml
+  - network-policies/allow-dns.yaml
+  - network-policies/allow-monitoring.yaml
+  - network-policies/production-isolation.yaml
+  - network-policies/database-access.yaml
+  # 6. Sealed Secrets
+  - sealed-secrets/namespace.yaml
+  - sealed-secrets/sealed-secrets-controller.yaml
+
+commonLabels:
+  project: saas
+  managed-by: kustomize

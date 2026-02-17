@@ -1,0 +1,149 @@
+# =============================================================================
+# NetworkPolicy - Allow DNS
+# =============================================================================
+# Autorise tous les pods a resoudre les noms DNS via CoreDNS (kube-system).
+# Sans cette regle, aucun pod ne peut resoudre les noms de service internes
+# (ex: postgresql.production.svc.cluster.local).
+#
+# CoreDNS ecoute sur le port 53 TCP/UDP dans kube-system.
+# Le service DNS du cluster est expose sur 10.43.0.10 (cluster-dns K3s).
+# =============================================================================
+---
+# Production : autoriser DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-dns
+    policy-type: essential
+  annotations:
+    description: "Autorise la resolution DNS via CoreDNS pour tous les pods"
+spec:
+  podSelector: {}  # Tous les pods
+  policyTypes:
+    - Egress
+  egress:
+    # DNS UDP (resolution standard)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    # DNS TCP (reponses > 512 bytes, zone transfers)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 53
+---
+# Staging : autoriser DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: staging
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-dns
+    policy-type: essential
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Monitoring : autoriser DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-dns
+    policy-type: essential
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Security : autoriser DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: security
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-dns
+    policy-type: essential
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Backup : autoriser DNS + egress S3 (pour les backups)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-dns
+    policy-type: essential
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS sortant vers S3 (Hetzner Object Storage)
+    - ports:
+        - protocol: TCP
+          port: 443

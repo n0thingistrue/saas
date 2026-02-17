@@ -1,0 +1,184 @@
+# =============================================================================
+# RBAC Developer - Acces developpeur par namespace
+# =============================================================================
+# Roles scopes au namespace pour les developpeurs.
+# Ils peuvent deployer et debugger dans leur namespace mais ne peuvent pas :
+#   - Modifier les NetworkPolicies
+#   - Acceder aux secrets directement
+#   - Modifier les ResourceQuotas
+#   - Acceder aux autres namespaces
+#
+# Integration Samba-AD : les groupes LDAP sont mappes aux RoleBindings
+# =============================================================================
+---
+# -----------------------------------------------------------------------------
+# Role : Developpeur Production
+# Peut deployer, scaler, voir les logs, mais pas modifier l'infra
+# -----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: developer
+  namespace: production
+  labels:
+    app.kubernetes.io/name: rbac
+    app.kubernetes.io/component: developer
+    rbac.saas.io/level: developer
+  annotations:
+    description: "Role developpeur - deploy, debug, logs dans production"
+rules:
+  # Pods : voir, logs, exec (debug), port-forward
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+  # Services et endpoints : lecture
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  # ConfigMaps : lecture (pas les secrets)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  # Events : lecture (debugging)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Deployments : gestion complete (deploy, rollback, scale)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  # StatefulSets : lecture seule (les DB sont gerees par l'infra)
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # HPA : lecture
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  # Jobs : gestion (pour les migrations DB par exemple)
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Ingress : lecture
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  # IngressRoutes Traefik : lecture
+  - apiGroups: ["traefik.io", "traefik.containo.us"]
+    resources: ["ingressroutes", "middlewares"]
+    verbs: ["get", "list", "watch"]
+  # PVC : lecture
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+---
+# RoleBinding : Lier le role developer au groupe LDAP
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: developer-binding
+  namespace: production
+  labels:
+    app.kubernetes.io/name: rbac
+    app.kubernetes.io/component: developer
+subjects:
+  - kind: Group
+    name: developers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: developer
+  apiGroup: rbac.authorization.k8s.io
+---
+# -----------------------------------------------------------------------------
+# Role : Developpeur Staging (plus permissif)
+# En staging, les developpeurs peuvent aussi creer des pods et services
+# pour leurs tests.
+# -----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: developer
+  namespace: staging
+  labels:
+    app.kubernetes.io/name: rbac
+    app.kubernetes.io/component: developer
+    rbac.saas.io/level: developer
+  annotations:
+    description: "Role developpeur staging - permissions etendues pour les tests"
+rules:
+  # Pods : gestion complete en staging
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "pods/portforward"]
+    verbs: ["*"]
+  # Services : gestion complete
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["*"]
+  # ConfigMaps : gestion complete
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["*"]
+  # Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Deployments : gestion complete
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["*"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["*"]
+  # HPA
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["*"]
+  # Networking
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Traefik
+  - apiGroups: ["traefik.io", "traefik.containo.us"]
+    resources: ["ingressroutes", "middlewares"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # PVC
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: developer-binding
+  namespace: staging
+  labels:
+    app.kubernetes.io/name: rbac
+    app.kubernetes.io/component: developer
+subjects:
+  - kind: Group
+    name: developers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: developer
+  apiGroup: rbac.authorization.k8s.io

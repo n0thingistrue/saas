@@ -1,0 +1,71 @@
+# =============================================================================
+# PV + PVC - PostgreSQL Standby (Node 2)
+# =============================================================================
+# Volume persistant pour le replica PostgreSQL (streaming replication).
+# Monte sur le volume Hetzner attache au Node 2.
+#
+# Meme taille que le primary pour supporter un failover complet.
+# En cas de promotion (failover Patroni), le standby devient primary
+# et doit pouvoir contenir toutes les donnees.
+# =============================================================================
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-postgresql-standby
+  labels:
+    app: postgresql
+    role: standby
+    node: node2
+    type: local-storage
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: standby
+    app.kubernetes.io/part-of: database
+  annotations:
+    description: "Volume Hetzner pour PostgreSQL Standby sur Node 2"
+    volume.hetzner.cloud/id: "REPLACE_WITH_VOLUME_ID"
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: node-role
+              operator: In
+              values: ["worker"]
+            - key: node-size
+              operator: In
+              values: ["small"]
+  local:
+    path: /mnt/HC_Volume_postgresql_standby
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-postgresql-standby
+  namespace: production
+  labels:
+    app: postgresql
+    role: standby
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: standby
+    app.kubernetes.io/part-of: database
+  annotations:
+    description: "PVC PostgreSQL Standby - 50GB sur Node 2"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 50Gi
+  selector:
+    matchLabels:
+      app: postgresql
+      role: standby
+      node: node2

@@ -1,0 +1,148 @@
+# =============================================================================
+# Pod Security Standards
+# =============================================================================
+# Configuration des standards de securite pour les pods.
+# Kubernetes 1.25+ supporte nativement les Pod Security Standards (PSS)
+# via les labels de namespace (configures dans 00-namespaces.yaml).
+#
+# Niveaux PSS :
+#   - privileged : aucune restriction (monitoring, security)
+#   - baseline : restrictions minimales (pas de hostNetwork, etc.)
+#   - restricted : restrictions maximales (non-root, read-only, etc.)
+#
+# Ce fichier definit des PodDisruptionBudgets (PDB) pour garantir
+# la disponibilite des services critiques pendant les maintenances.
+# =============================================================================
+---
+# =============================================================================
+# PodDisruptionBudgets (PDB)
+# =============================================================================
+# Les PDB garantissent qu'un nombre minimum de pods reste disponible
+# pendant les operations de maintenance (drain, upgrade, rolling update).
+# Essentiels pour le SLA 99.5%.
+# =============================================================================
+
+# PDB Backend : au moins 2 pods sur 3 toujours disponibles
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend-pdb
+  namespace: production
+  labels:
+    app: backend
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+  annotations:
+    description: "Garantit au moins 2 replicas backend disponibles"
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: backend
+---
+# PDB Frontend : au moins 1 pod sur 2 toujours disponible
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+  namespace: production
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: web
+  annotations:
+    description: "Garantit au moins 1 replica frontend disponible"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: frontend
+---
+# PDB PostgreSQL : ne JAMAIS evincer les 2 pods en meme temps
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgresql-pdb
+  namespace: production
+  labels:
+    app: postgresql
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: database
+  annotations:
+    description: "Garantit au moins 1 instance PostgreSQL disponible (primary ou standby)"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: postgresql
+---
+# PDB Redis : au moins 1 pod disponible
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-pdb
+  namespace: production
+  labels:
+    app: redis
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+  annotations:
+    description: "Garantit au moins 1 instance Redis disponible"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: redis
+---
+# PDB Samba-AD : toujours disponible (singleton, maxUnavailable 0)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: samba-ad-pdb
+  namespace: production
+  labels:
+    app: samba-ad
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/component: domain-controller
+  annotations:
+    description: "Samba-AD ne peut pas etre evince (singleton)"
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: samba-ad
+---
+# PDB Traefik : toujours au moins 1 disponible
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: traefik-pdb
+  namespace: ingress
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress
+  annotations:
+    description: "Garantit au moins 1 instance Traefik pour le routage"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+---
+# PDB Prometheus : toujours disponible (singleton)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: prometheus-pdb
+  namespace: monitoring
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+  annotations:
+    description: "Prometheus ne peut pas etre evince (metriques critiques)"
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus

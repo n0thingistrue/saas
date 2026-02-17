@@ -1,0 +1,26 @@
+# =============================================================================
+# Namespace pour Sealed Secrets Controller
+# =============================================================================
+# Le controller Sealed Secrets tourne dans le namespace 'security'.
+# Il est le seul composant capable de dechiffrer les SealedSecrets
+# en Secrets Kubernetes standards.
+#
+# La cle de chiffrement est generee automatiquement par le controller
+# lors de sa premiere execution. Cette cle est critique :
+#   - Si elle est perdue, tous les SealedSecrets deviennent inutilisables
+#   - Backup de la cle : kubectl get secret -n security -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml > sealed-secrets-key-backup.yaml
+# =============================================================================
+---
+# Le namespace 'security' est deja cree dans 00-namespaces.yaml
+# Ce fichier cree uniquement le ServiceAccount dedie
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sealed-secrets-controller
+  namespace: security
+  labels:
+    app.kubernetes.io/name: sealed-secrets
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: security-stack
+  annotations:
+    description: "ServiceAccount pour le controller Sealed Secrets"

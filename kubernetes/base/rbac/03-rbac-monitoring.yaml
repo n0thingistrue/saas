@@ -1,0 +1,219 @@
+# =============================================================================
+# RBAC Monitoring - Permissions Prometheus, Grafana, Promtail
+# =============================================================================
+# ServiceAccounts et permissions pour la stack d'observabilite.
+#
+# Prometheus a besoin de :
+#   - Lire les pods, services, endpoints dans TOUS les namespaces (discovery)
+#   - Lire les nodes et metrics (metriques infra)
+#   - Lire les ServiceMonitors et PrometheusRules (CRDs)
+#
+# Grafana a besoin de :
+#   - Interroger Prometheus et Loki (via leur API, pas via RBAC K8s)
+#   - Optionnel : lire les ConfigMaps pour les dashboards
+#
+# Promtail a besoin de :
+#   - Lire les pods dans tous les namespaces (enrichissement labels)
+#   - Acceder aux logs sur les nodes (via hostPath)
+# =============================================================================
+---
+# -----------------------------------------------------------------------------
+# ServiceAccount : Prometheus
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: monitoring-stack
+  annotations:
+    description: "ServiceAccount pour Prometheus - scraping metriques cluster-wide"
+---
+# ClusterRole : Prometheus (lecture cluster-wide pour le scraping)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: monitoring-stack
+rules:
+  # Decouverte des targets : pods, services, endpoints
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/proxy
+      - nodes/metrics
+      - services
+      - endpoints
+      - pods
+    verbs: ["get", "list", "watch"]
+  # Acces aux metriques des nodes (kubelet, cadvisor)
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+  # ConfigMaps (pour la decouverte de config)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+  # Namespaces (pour le label-based filtering)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  # Networking (pour decouvrir les ingresses)
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  # Non-resource URLs (metriques API server)
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: ["get"]
+  # CRDs Prometheus Operator (ServiceMonitor, PodMonitor, PrometheusRule)
+  - apiGroups: ["monitoring.coreos.com"]
+    resources:
+      - servicemonitors
+      - podmonitors
+      - prometheusrules
+      - probes
+      - alertmanagerconfigs
+    verbs: ["get", "list", "watch"]
+---
+# ClusterRoleBinding : Prometheus
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: monitoring-stack
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: prometheus
+  apiGroup: rbac.authorization.k8s.io
+---
+# -----------------------------------------------------------------------------
+# ServiceAccount : Grafana
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: monitoring-stack
+  annotations:
+    description: "ServiceAccount pour Grafana - acces aux dashboards et datasources"
+---
+# Role : Grafana dans le namespace monitoring (lecture ConfigMaps pour dashboards)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: monitoring-stack
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: monitoring-stack
+subjects:
+  - kind: ServiceAccount
+    name: grafana
+    namespace: monitoring
+roleRef:
+  kind: Role
+  name: grafana
+  apiGroup: rbac.authorization.k8s.io
+---
+# -----------------------------------------------------------------------------
+# ServiceAccount : Promtail (DaemonSet - collecte logs)
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/component: log-collector
+    app.kubernetes.io/part-of: monitoring-stack
+  annotations:
+    description: "ServiceAccount pour Promtail - collecte des logs de tous les pods"
+---
+# ClusterRole : Promtail (lecture pods cluster-wide pour enrichir les labels)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: monitoring-stack
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: monitoring-stack
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: promtail
+  apiGroup: rbac.authorization.k8s.io
+---
+# -----------------------------------------------------------------------------
+# ServiceAccount : AlertManager
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/part-of: monitoring-stack
+  annotations:
+    description: "ServiceAccount pour AlertManager"
+---
+# -----------------------------------------------------------------------------
+# ServiceAccount : Loki
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loki
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: log-aggregation
+    app.kubernetes.io/part-of: monitoring-stack
+  annotations:
+    description: "ServiceAccount pour Loki - agregation et stockage des logs"

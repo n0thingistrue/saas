@@ -1,0 +1,68 @@
+# =============================================================================
+# PV + PVC - Samba-AD (Node 1)
+# =============================================================================
+# Volume pour les donnees Samba Active Directory :
+#   - Base de donnees AD (sam.ldb, idmap.ldb)
+#   - SYSVOL (Group Policies)
+#   - Configuration Samba
+#   - Keytabs Kerberos
+#
+# 20GB largement suffisant pour une base AD de petite/moyenne taille.
+# Les donnees sont critiques : reclaimPolicy Retain.
+# =============================================================================
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-samba-ad
+  labels:
+    app: samba-ad
+    role: primary
+    node: node1
+    type: local-storage
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/component: domain-controller
+    app.kubernetes.io/part-of: auth
+  annotations:
+    description: "Volume Hetzner pour Samba Active Directory sur Node 1"
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: node-role
+              operator: In
+              values: ["control-plane"]
+  local:
+    path: /mnt/HC_Volume_samba
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-samba-ad
+  namespace: production
+  labels:
+    app: samba-ad
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/component: domain-controller
+    app.kubernetes.io/part-of: auth
+  annotations:
+    description: "PVC Samba-AD - 20GB sur Node 1"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 20Gi
+  selector:
+    matchLabels:
+      app: samba-ad
+      role: primary
+      node: node1

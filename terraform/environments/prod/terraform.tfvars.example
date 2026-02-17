@@ -1,0 +1,57 @@
+# =============================================================================
+# Variables Production - COPIER vers terraform.tfvars et compléter
+# =============================================================================
+# cp terraform.tfvars.example terraform.tfvars
+# Ne JAMAIS commiter terraform.tfvars (contient le token API)
+# =============================================================================
+
+# --- Authentification Hetzner ---
+hcloud_token = "VOTRE_TOKEN_HETZNER_ICI"
+
+# --- Environnement ---
+environment  = "prod"
+project_name = "saas"
+
+# --- Localisation ---
+# fsn1 = Falkenstein (Allemagne) - recommandé pour la latence EU
+location = "fsn1"
+
+# --- Serveurs ---
+node1_type   = "ccx33"   # 16 vCPU, 32GB RAM, 320GB NVMe (~25€/mois)
+node2_type   = "ccx23"   # 4 vCPU, 16GB RAM, 160GB NVMe (~10€/mois)
+server_image = "debian-12"
+
+# --- SSH ---
+ssh_key_name        = "votre-cle-ssh"
+ssh_public_key_path = "~/.ssh/id_rsa.pub"
+
+# --- Réseau ---
+network_cidr    = "10.10.0.0/16"
+subnet_cidr     = "10.10.0.0/24"
+node1_private_ip = "10.10.0.2"
+node2_private_ip = "10.10.0.3"
+
+# --- Load Balancer ---
+lb_type = "lb11"   # Plus petit LB Hetzner (~5€/mois)
+
+# --- Volumes ---
+volume_postgresql_size         = 50   # GB
+volume_postgresql_standby_size = 50   # GB
+volume_redis_size              = 10   # GB
+volume_samba_size              = 20   # GB
+volume_monitoring_size         = 30   # GB
+
+# --- DNS ---
+domain = "votre-domaine.com"
+email  = "admin@votre-domaine.com"
+
+# --- S3 Backups ---
+s3_bucket_name = "saas-backups-prod"
+
+# --- Labels ---
+labels = {
+  project     = "saas"
+  managed_by  = "terraform"
+  environment = "prod"
+  certification = "rncp37680"
+}

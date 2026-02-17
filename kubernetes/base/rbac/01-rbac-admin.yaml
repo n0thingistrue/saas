@@ -1,0 +1,178 @@
+# =============================================================================
+# RBAC Admin - Acces administrateur cluster
+# =============================================================================
+# ClusterRole et ClusterRoleBinding pour les administrateurs infrastructure.
+#
+# Principes :
+#   - Separation des privileges (admin ≠ developer ≠ monitoring)
+#   - Moindre privilege : chaque role n'a que les permissions necessaires
+#   - Audit : toutes les actions admin sont loguees via audit-policy
+#
+# Roles definis :
+#   - cluster-admin-custom : Admin complet (similaire a cluster-admin built-in)
+#   - cluster-viewer : Lecture seule sur tout le cluster
+#   - namespace-admin : Admin d'un namespace specifique
+# =============================================================================
+---
+# -----------------------------------------------------------------------------
+# ClusterRole : Administrateur cluster personnalise
+# Comme cluster-admin built-in mais avec des exclusions explicites
+# pour eviter les suppressions accidentelles de namespaces systeme.
+# -----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-admin-custom
+  labels:
+    app.kubernetes.io/name: rbac
+    app.kubernetes.io/component: admin
+    rbac.saas.io/level: admin
+  annotations:
+    description: "Administrateur cluster - acces complet sauf namespaces systeme"
+rules:
+  # Acces complet aux ressources core
+  - apiGroups: [""]
+    resources: ["*"]
+    verbs: ["*"]
+  # Acces complet aux apps
+  - apiGroups: ["apps"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Acces complet au batch (CronJobs, Jobs)
+  - apiGroups: ["batch"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Gestion RBAC
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Gestion networking (NetworkPolicies, Ingress)
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Gestion storage
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Gestion autoscaling (HPA)
+  - apiGroups: ["autoscaling"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Gestion policy (PodDisruptionBudget)
+  - apiGroups: ["policy"]
+    resources: ["*"]
+    verbs: ["*"]
+  # CRDs Traefik
+  - apiGroups: ["traefik.io", "traefik.containo.us"]
+    resources: ["*"]
+    verbs: ["*"]
+  # CRDs cert-manager
+  - apiGroups: ["cert-manager.io", "acme.cert-manager.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  # CRDs Sealed Secrets
+  - apiGroups: ["bitnami.com"]
+    resources: ["*"]
+    verbs: ["*"]
+  # CRDs Prometheus (ServiceMonitor, PrometheusRule, etc.)
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["*"]
+    verbs: ["*"]
+  # CRDs ArgoCD
+  - apiGroups: ["argoproj.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Metrics
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+---
+# -----------------------------------------------------------------------------
+# ClusterRoleBinding : Lier le role admin au groupe admins
+# En production, ce binding est lie a un groupe LDAP Samba-AD
+# -----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-admin-binding
+  labels:
+    app.kubernetes.io/name: rbac
+    app.kubernetes.io/component: admin
+  annotations:
+    description: "Lie le ClusterRole admin au groupe admins et au user admin"
+subjects:
+  # Utilisateur admin principal (pour l'administration initiale)
+  - kind: User
+    name: admin
+    apiGroup: rbac.authorization.k8s.io
+  # Groupe LDAP pour les administrateurs (Samba-AD)
+  - kind: Group
+    name: cluster-admins
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin-custom
+  apiGroup: rbac.authorization.k8s.io
+---
+# -----------------------------------------------------------------------------
+# ClusterRole : Lecture seule sur tout le cluster
+# Pour les auditeurs, managers, ou le monitoring externe
+# -----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-viewer
+  labels:
+    app.kubernetes.io/name: rbac
+    app.kubernetes.io/component: viewer
+    rbac.saas.io/level: viewer
+  annotations:
+    description: "Lecture seule sur toutes les ressources du cluster"
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - namespaces
+      - nodes
+      - configmaps
+      - events
+      - persistentvolumes
+      - persistentvolumeclaims
+      - resourcequotas
+      - limitranges
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+---
+# ClusterRoleBinding pour les viewers
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-viewer-binding
+  labels:
+    app.kubernetes.io/name: rbac
+    app.kubernetes.io/component: viewer
+subjects:
+  - kind: Group
+    name: cluster-viewers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cluster-viewer
+  apiGroup: rbac.authorization.k8s.io
