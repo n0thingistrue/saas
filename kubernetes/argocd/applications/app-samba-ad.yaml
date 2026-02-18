@@ -1,0 +1,52 @@
+# =============================================================================
+# ArgoCD Application - Samba Active Directory
+# =============================================================================
+# Deploie Samba-AD (Domain Controller).
+# SyncPolicy : MANUAL car composant stateful critique.
+# Un sync automatique pourrait provoquer un restart du DC
+# et couper l'authentification LDAP/Kerberos.
+#
+# Sync-wave: "1" (apres databases, avant backend).
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: samba-ad
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: samba-ad
+    app.kubernetes.io/part-of: saas-platform
+    tier: authentication
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: alerts-deployments
+    notifications.argoproj.io/subscribe.on-health-degraded.slack: alerts-critical
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-username/infrastructure-rncp.git
+    targetRevision: main
+    path: kubernetes/apps/samba-ad
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  # MANUAL SYNC : pas de syncPolicy automated
+  # Pour sync : argocd app sync samba-ad
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates

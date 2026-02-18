@@ -1,0 +1,143 @@
+# =============================================================================
+# Security Scan - Scheduled (Weekly)
+# =============================================================================
+# Scan de securite hebdomadaire (lundi 2h UTC).
+# Jobs :
+#   - Trivy : scan des images Docker
+#   - OWASP Dependency Check : vulnerabilites npm
+#   - Kubesec : scan des manifests Kubernetes
+# =============================================================================
+name: Weekly Security Scan
+
+on:
+  schedule:
+    # Lundi a 2h UTC
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+jobs:
+  # =========================================================================
+  # Job 1 : Trivy Image Scan
+  # =========================================================================
+  trivy-images:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image:
+          - "your-username/saas-backend:latest"
+          - "your-username/saas-frontend:latest"
+          - "postgres:16-alpine"
+          - "redis:7.2-alpine"
+          - "traefik:v3.0"
+          - "grafana/grafana:10.4.2"
+          - "prom/prometheus:v2.50.1"
+          - "grafana/loki:2.9.6"
+    steps:
+      - name: Run Trivy scan on ${{ matrix.image }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ matrix.image }}
+          severity: "HIGH,CRITICAL"
+          exit-code: "0"
+          format: "table"
+
+      - name: Run Trivy SARIF
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ matrix.image }}
+          severity: "HIGH,CRITICAL"
+          exit-code: "0"
+          format: "sarif"
+          output: "trivy-${{ strategy.job-index }}.sarif"
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: "trivy-${{ strategy.job-index }}.sarif"
+          category: "trivy-${{ matrix.image }}"
+
+  # =========================================================================
+  # Job 2 : Dependency Check
+  # =========================================================================
+  dependency-check:
+    name: OWASP Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Audit backend dependencies
+        run: |
+          cd apps/backend 2>/dev/null && npm audit --audit-level=high || true
+        continue-on-error: true
+
+      - name: Audit frontend dependencies
+        run: |
+          cd apps/frontend 2>/dev/null && npm audit --audit-level=high || true
+        continue-on-error: true
+
+  # =========================================================================
+  # Job 3 : Kubesec Manifest Scan
+  # =========================================================================
+  kubesec:
+    name: Kubesec K8s Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install kubesec
+        run: |
+          curl -sSL https://github.com/controlplaneio/kubesec/releases/latest/download/kubesec_linux_amd64.tar.gz | tar xz
+          sudo mv kubesec /usr/local/bin/
+
+      - name: Scan Kubernetes manifests
+        run: |
+          echo "=== Kubesec Security Scan ==="
+          SCORE=0
+          for f in $(find kubernetes/ -name "*.yaml" | grep -E "(deployment|statefulset|daemonset)" | head -20); do
+            echo "--- Scanning: $f ---"
+            RESULT=$(kubesec scan "$f" 2>/dev/null || echo "[]")
+            FILE_SCORE=$(echo "$RESULT" | jq -r '.[0].score // 0' 2>/dev/null || echo "0")
+            echo "Score: $FILE_SCORE"
+            SCORE=$((SCORE + FILE_SCORE))
+          done
+          echo "=== Total Score: $SCORE ==="
+
+      - name: Upload scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-scan-report
+          path: "*.sarif"
+          retention-days: 30
+
+  # =========================================================================
+  # Job 4 : Notify
+  # =========================================================================
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [trivy-images, dependency-check, kubesec]
+    if: always()
+    steps:
+      - name: Slack notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,workflow
+          text: |
+            Weekly security scan completed.
+            Trivy: ${{ needs.trivy-images.result }}
+            Dependencies: ${{ needs.dependency-check.result }}
+            Kubesec: ${{ needs.kubesec.result }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: env.SLACK_WEBHOOK_URL != ''

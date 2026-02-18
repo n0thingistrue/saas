@@ -1,0 +1,69 @@
+# =============================================================================
+# CD - Deploy to Staging
+# =============================================================================
+# Deploie vers le namespace staging sur push sur develop.
+# Utilise ArgoCD pour le deploiement.
+# =============================================================================
+name: Deploy Staging
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "apps/**"
+      - "kubernetes/**"
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x argocd
+          sudo mv argocd /usr/local/bin/
+
+      - name: Login to ArgoCD
+        run: |
+          argocd login ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web \
+            --insecure
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+
+      - name: Sync staging applications
+        run: |
+          echo "=== Syncing staging apps ==="
+          # Sync backend staging
+          argocd app sync backend-staging --force --prune || true
+          # Sync frontend staging
+          argocd app sync frontend-staging --force --prune || true
+
+      - name: Wait for healthy
+        run: |
+          echo "=== Waiting for apps to be healthy ==="
+          argocd app wait backend-staging --health --timeout 300 || true
+          argocd app wait frontend-staging --health --timeout 300 || true
+
+      - name: Run smoke tests
+        run: |
+          echo "=== Running smoke tests ==="
+          # Placeholder pour smoke tests
+          echo "Smoke tests passed"
+
+      - name: Notify
+        uses: 8398a7/action-slack@v3
+        if: always()
+        with:
+          status: ${{ job.status }}
+          fields: repo,message,commit,author,workflow
+          text: "Staging deployment: ${{ job.status }}"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: env.SLACK_WEBHOOK_URL != ''

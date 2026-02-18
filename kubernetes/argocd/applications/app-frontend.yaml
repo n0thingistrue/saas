@@ -1,0 +1,45 @@
+# =============================================================================
+# ArgoCD Application - Frontend Next.js
+# =============================================================================
+# Deploie le frontend Next.js.
+# SyncPolicy automated.
+# Sync-wave: "3" (apres backend).
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: frontend
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: saas-platform
+    tier: application
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    notifications.argoproj.io/subscribe.on-deployed.slack: deployments
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: alerts-deployments
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-username/infrastructure-rncp.git
+    targetRevision: main
+    path: kubernetes/apps/frontend
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -1,0 +1,52 @@
+# =============================================================================
+# ArgoCD App of Apps - Application Parent
+# =============================================================================
+# Pattern "App of Apps" : cette Application unique deploie
+# toutes les autres Applications ArgoCD.
+#
+# Avantages :
+#   - Un seul point d'entree pour tout deployer
+#   - Les sync-waves gerent l'ordre de deploiement
+#   - GitOps complet : tout est dans Git
+#
+# Ordre de deploiement (via sync-waves) :
+#   Wave 0 : Databases (PostgreSQL + Redis)
+#   Wave 1 : Samba-AD (manual sync)
+#   Wave 2 : Backend NestJS
+#   Wave 3 : Frontend Next.js
+#   Wave 4 : Monitoring Stack
+#   Wave 5 : Ingress (Traefik + cert-manager)
+#
+# Deploiement initial :
+#   kubectl apply -f kubernetes/argocd/applications/app-of-apps.yaml
+#
+# Tout supprimer :
+#   argocd app delete app-of-apps --cascade
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app-of-apps
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: app-of-apps
+    app.kubernetes.io/part-of: saas-platform
+  annotations:
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: alerts-critical
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-username/infrastructure-rncp.git
+    targetRevision: main
+    path: kubernetes/argocd/applications
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

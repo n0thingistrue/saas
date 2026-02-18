@@ -1,0 +1,51 @@
+# =============================================================================
+# ArgoCD Application - Databases (PostgreSQL Patroni + Redis Sentinel)
+# =============================================================================
+# Deploie la stack databases en premier (sync-wave: "0").
+# SyncPolicy automated avec self-heal et prune.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: databases
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: databases
+    app.kubernetes.io/part-of: saas-platform
+    tier: data
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: alerts-deployments
+    notifications.argoproj.io/subscribe.on-health-degraded.slack: alerts-deployments
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-username/infrastructure-rncp.git
+    targetRevision: main
+    path: kubernetes/databases
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=false
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates

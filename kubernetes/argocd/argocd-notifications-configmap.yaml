@@ -1,0 +1,120 @@
+# =============================================================================
+# ConfigMap - ArgoCD Notifications
+# =============================================================================
+# Notifications automatiques lors des evenements ArgoCD.
+# Templates pour Slack (adapter le webhook).
+#
+# Evenements notifies :
+#   - app-deployed : application synchronisee avec succes
+#   - app-health-degraded : application en etat degrade
+#   - app-sync-failed : echec de synchronisation
+#   - app-sync-succeeded : synchronisation reussie
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-notifications
+    app.kubernetes.io/part-of: argocd
+data:
+  # Service Slack
+  service.slack: |
+    token: $slack-token
+
+  # --- Templates ---
+  template.app-deployed: |
+    message: |
+      Application *{{.app.metadata.name}}* deployee avec succes.
+      Revision: {{.app.status.sync.revision}}
+      Environment: {{.app.spec.destination.namespace}}
+    slack:
+      attachments: |
+        [{
+          "color": "#18be52",
+          "title": "{{.app.metadata.name}} - Deployed",
+          "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+          "fields": [
+            { "title": "Namespace", "value": "{{.app.spec.destination.namespace}}", "short": true },
+            { "title": "Revision", "value": "{{.app.status.sync.revision | trunc 7}}", "short": true },
+            { "title": "Status", "value": "{{.app.status.health.status}}", "short": true }
+          ]
+        }]
+
+  template.app-health-degraded: |
+    message: |
+      Application *{{.app.metadata.name}}* est en etat DEGRADE.
+      Health: {{.app.status.health.status}}
+    slack:
+      attachments: |
+        [{
+          "color": "#f4c030",
+          "title": "{{.app.metadata.name}} - Health Degraded",
+          "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+          "fields": [
+            { "title": "Health", "value": "{{.app.status.health.status}}", "short": true },
+            { "title": "Sync", "value": "{{.app.status.sync.status}}", "short": true }
+          ]
+        }]
+
+  template.app-sync-failed: |
+    message: |
+      Echec synchronisation *{{.app.metadata.name}}*.
+      Erreur: {{.app.status.operationState.message}}
+    slack:
+      attachments: |
+        [{
+          "color": "#e05d44",
+          "title": "{{.app.metadata.name}} - Sync Failed",
+          "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+          "fields": [
+            { "title": "Error", "value": "{{.app.status.operationState.message | trunc 200}}", "short": false },
+            { "title": "Revision", "value": "{{.app.status.sync.revision | trunc 7}}", "short": true }
+          ]
+        }]
+
+  template.app-sync-succeeded: |
+    message: |
+      Synchronisation *{{.app.metadata.name}}* reussie.
+    slack:
+      attachments: |
+        [{
+          "color": "#18be52",
+          "title": "{{.app.metadata.name}} - Sync OK",
+          "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+          "fields": [
+            { "title": "Revision", "value": "{{.app.status.sync.revision | trunc 7}}", "short": true },
+            { "title": "Health", "value": "{{.app.status.health.status}}", "short": true }
+          ]
+        }]
+
+  # --- Triggers ---
+  trigger.on-deployed: |
+    - description: Application deployed
+      send:
+        - app-deployed
+      when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+
+  trigger.on-health-degraded: |
+    - description: Application health degraded
+      send:
+        - app-health-degraded
+      when: app.status.health.status == 'Degraded'
+
+  trigger.on-sync-failed: |
+    - description: Application sync failed
+      send:
+        - app-sync-failed
+      when: app.status.operationState != nil and app.status.operationState.phase in ['Error', 'Failed']
+
+  trigger.on-sync-succeeded: |
+    - description: Application sync succeeded
+      send:
+        - app-sync-succeeded
+      when: app.status.operationState != nil and app.status.operationState.phase in ['Succeeded']
+
+  # --- Default Triggers (appliques a toutes les apps) ---
+  defaultTriggers: |
+    - on-sync-failed
+    - on-health-degraded

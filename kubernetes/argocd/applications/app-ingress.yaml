@@ -1,0 +1,44 @@
+# =============================================================================
+# ArgoCD Application - Ingress Stack (Traefik + cert-manager + WAF)
+# =============================================================================
+# Deploie Traefik, cert-manager, middlewares, IngressRoutes.
+# SyncPolicy automated.
+# Sync-wave: "5" (en dernier, apres que toutes les apps soient deployees).
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ingress
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: ingress
+    app.kubernetes.io/part-of: saas-platform
+    tier: networking
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: alerts-critical
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-username/infrastructure-rncp.git
+    targetRevision: main
+    path: kubernetes/ingress
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ingress
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

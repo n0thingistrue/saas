@@ -1,0 +1,98 @@
+# =============================================================================
+# ConfigMap - ArgoCD Configuration
+# =============================================================================
+# Configuration principale ArgoCD.
+# Ce ConfigMap ecrase les valeurs par defaut apres l'installation.
+#
+# Fonctionnalites :
+#   - URL publique pour l'UI
+#   - OIDC via LDAP Samba-AD (optionnel)
+#   - Health checks custom pour StatefulSets
+#   - Kustomize avec support Helm
+#   - Status badge enabled
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  # URL publique ArgoCD
+  url: "https://argocd.saas.local"
+
+  # Timeout pour les operations de sync
+  timeout.reconciliation: "180s"
+
+  # Status badge (afficher dans README GitHub)
+  statusbadge.enabled: "true"
+
+  # Kustomize avec support Helm
+  kustomize.buildOptions: "--enable-helm"
+
+  # Admin account enabled (desactiver apres config OIDC)
+  admin.enabled: "true"
+
+  # OIDC / LDAP via Samba-AD (optionnel)
+  # Decommenter et configurer pour SSO via Active Directory
+  # dex.config: |
+  #   connectors:
+  #     - type: ldap
+  #       name: Samba-AD
+  #       id: ldap
+  #       config:
+  #         host: "samba-ad.production.svc.cluster.local:389"
+  #         insecureNoSSL: true
+  #         insecureSkipVerify: true
+  #         bindDN: "CN=app-backend,OU=Services,DC=saas,DC=local"
+  #         bindPW: "$dex.ldap.bindPW"
+  #         usernamePrompt: "Username"
+  #         userSearch:
+  #           baseDN: "OU=Users,DC=saas,DC=local"
+  #           filter: "(objectClass=user)"
+  #           username: "sAMAccountName"
+  #           idAttr: "sAMAccountName"
+  #           emailAttr: "mail"
+  #           nameAttr: "displayName"
+  #         groupSearch:
+  #           baseDN: "OU=Groups,DC=saas,DC=local"
+  #           filter: "(objectClass=group)"
+  #           userMatchers:
+  #             - userAttr: "DN"
+  #               groupAttr: "member"
+  #           nameAttr: "cn"
+
+  # Health checks custom pour StatefulSets Patroni/Redis
+  resource.customizations: |
+    apps/StatefulSet:
+      health.lua: |
+        hs = {}
+        if obj.status ~= nil then
+          if obj.status.readyReplicas ~= nil then
+            if obj.status.readyReplicas == obj.spec.replicas then
+              hs.status = "Healthy"
+              hs.message = "All replicas are ready"
+            else
+              hs.status = "Progressing"
+              hs.message = obj.status.readyReplicas .. "/" .. obj.spec.replicas .. " replicas ready"
+            end
+          else
+            hs.status = "Progressing"
+            hs.message = "Waiting for replicas"
+          end
+        else
+          hs.status = "Progressing"
+          hs.message = "Waiting for status"
+        end
+        return hs
+
+  # Exclusions : ne pas tracker certaines ressources
+  resource.exclusions: |
+    - apiGroups:
+        - "events.k8s.io"
+      kinds:
+        - Event
+      clusters:
+        - "*"

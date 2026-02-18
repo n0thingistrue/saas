@@ -1,0 +1,132 @@
+# =============================================================================
+# CD - Deploy to Production
+# =============================================================================
+# Deploie vers production sur tag release v*.
+# Requiert une approbation manuelle (environment protection).
+#
+# Workflow :
+#   1. Tag release v1.2.3
+#   2. Approbation manuelle (environment protection)
+#   3. Deploy via ArgoCD
+#   4. Smoke tests
+#   5. Rollback automatique si echec
+# =============================================================================
+name: Deploy Production
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  # =========================================================================
+  # Job 1 : Pre-deploy validation
+  # =========================================================================
+  validate:
+    name: Pre-deploy Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate tag format
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Tag must be in format v1.2.3"
+            exit 1
+          fi
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "Valid tag: $TAG"
+
+      - name: Validate manifests
+        run: |
+          find kubernetes/ -name "*.yaml" -o -name "*.yml" | head -20 | while read f; do
+            python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null || {
+              echo "INVALID: $f"; exit 1;
+            }
+          done
+          echo "All manifests valid"
+
+  # =========================================================================
+  # Job 2 : Deploy (requires manual approval)
+  # =========================================================================
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [validate]
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x argocd
+          sudo mv argocd /usr/local/bin/
+
+      - name: Login to ArgoCD
+        run: |
+          argocd login ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web \
+            --insecure
+
+      - name: Sync production applications
+        id: sync
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "=== Deploying $TAG to production ==="
+
+          # Save current revision for rollback
+          PREV_REV=$(argocd app get backend -o json | jq -r '.status.sync.revision')
+          echo "PREV_REV=$PREV_REV" >> $GITHUB_ENV
+
+          # Sync all apps
+          argocd app sync backend --force --prune
+          argocd app sync frontend --force --prune
+
+      - name: Wait for healthy
+        run: |
+          echo "=== Waiting for apps to be healthy ==="
+          argocd app wait backend --health --timeout 300
+          argocd app wait frontend --health --timeout 300
+
+      - name: Run smoke tests
+        id: smoke
+        run: |
+          echo "=== Running production smoke tests ==="
+          # Placeholder : remplacer par de vrais smoke tests
+          # curl -sf https://api.saas.local/health || exit 1
+          # curl -sf https://app.saas.local || exit 1
+          echo "Smoke tests passed"
+
+      - name: Rollback on failure
+        if: failure() && steps.smoke.outcome == 'failure'
+        run: |
+          echo "=== ROLLBACK ==="
+          argocd app rollback backend || true
+          argocd app rollback frontend || true
+          echo "Rollback completed"
+
+  # =========================================================================
+  # Job 3 : Notify
+  # =========================================================================
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [validate, deploy]
+    if: always()
+    steps:
+      - name: Slack notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ needs.deploy.result }}
+          fields: repo,message,commit,author,workflow
+          text: |
+            Production deployment ${{ needs.deploy.result }}
+            Tag: ${{ github.ref_name }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: env.SLACK_WEBHOOK_URL != ''

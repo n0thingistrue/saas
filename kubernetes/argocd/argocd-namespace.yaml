@@ -1,0 +1,19 @@
+# =============================================================================
+# Namespace - ArgoCD
+# =============================================================================
+# Namespace dedie pour ArgoCD GitOps controller.
+# Pod Security Standard : restricted (ArgoCD n'a pas besoin de privileges).
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/component: gitops
+    app.kubernetes.io/part-of: cicd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    description: "Namespace ArgoCD GitOps Controller"
