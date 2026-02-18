@@ -1,0 +1,149 @@
+# =============================================================================
+# ConfigMap - AlertManager Configuration
+# =============================================================================
+# Routage des alertes avec groupement, inhibition et multi-canal.
+#
+# Severites :
+#   - critical : repeat 1h (email + Slack + PagerDuty)
+#   - warning : repeat 4h (Slack)
+#   - info : repeat 24h (Slack low-priority)
+#
+# Inhibition : les alertes critical inhibent les warnings correspondantes.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+  labels:
+    app: alertmanager
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: config
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+      # SMTP (decommenter et configurer)
+      # smtp_smarthost: 'smtp.example.com:587'
+      # smtp_from: 'alertmanager@saas.local'
+      # smtp_auth_username: 'alertmanager@saas.local'
+      # smtp_auth_password_file: /etc/alertmanager/secrets/EMAIL_AUTH_PASSWORD
+      # smtp_require_tls: true
+
+    # Templates (optionnel)
+    templates:
+      - '/etc/alertmanager/templates/*.tmpl'
+
+    # ==================================================================
+    # Routing
+    # ==================================================================
+    route:
+      # Regrouper les alertes par ces labels
+      group_by: ['alertname', 'cluster', 'namespace', 'service']
+      # Attendre 10s avant d'envoyer un groupe
+      group_wait: 10s
+      # Attendre 10s entre les envois du meme groupe
+      group_interval: 10s
+      # Re-envoyer les alertes non resolues toutes les 12h par defaut
+      repeat_interval: 12h
+      # Receiver par defaut
+      receiver: default
+
+      routes:
+        # --- CRITICAL : repeat toutes les heures ---
+        - match:
+            severity: critical
+          receiver: critical
+          repeat_interval: 1h
+          continue: false
+
+        # --- WARNING : repeat toutes les 4h ---
+        - match:
+            severity: warning
+          receiver: warning
+          repeat_interval: 4h
+          continue: false
+
+        # --- INFO : repeat toutes les 24h ---
+        - match:
+            severity: info
+          receiver: info
+          repeat_interval: 24h
+          continue: false
+
+    # ==================================================================
+    # Receivers
+    # ==================================================================
+    receivers:
+      # Default : webhook catch-all
+      - name: default
+        webhook_configs:
+          - url: 'http://localhost:9095/webhook'
+            send_resolved: true
+
+      # Critical : multi-canal (Slack + Email + PagerDuty)
+      - name: critical
+        # Slack
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/SLACK_WEBHOOK_URL
+            channel: '#alerts-critical'
+            send_resolved: true
+            title: '{{ template "slack.title" . }}'
+            text: '{{ template "slack.text" . }}'
+            color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+        # Email (decommenter si SMTP configure)
+        # email_configs:
+        #   - to: 'oncall@saas.local'
+        #     send_resolved: true
+        # PagerDuty (decommenter si configure)
+        # pagerduty_configs:
+        #   - service_key_file: /etc/alertmanager/secrets/PAGERDUTY_API_KEY
+        #     severity: 'critical'
+
+      # Warning : Slack uniquement
+      - name: warning
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/SLACK_WEBHOOK_URL
+            channel: '#alerts-warning'
+            send_resolved: true
+            color: '{{ if eq .Status "firing" }}warning{{ else }}good{{ end }}'
+
+      # Info : Slack low-priority
+      - name: info
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/SLACK_WEBHOOK_URL
+            channel: '#alerts-info'
+            send_resolved: false
+
+    # ==================================================================
+    # Inhibition Rules
+    # ==================================================================
+    inhibit_rules:
+      # Si un service est critical, inhiber les warnings pour le meme service
+      - source_match:
+          severity: critical
+        target_match:
+          severity: warning
+        equal: ['alertname', 'namespace', 'service']
+
+      # Si un node est down, inhiber les alertes pods sur ce node
+      - source_match:
+          alertname: NodeDown
+        target_match_re:
+          severity: warning|info
+        equal: ['instance']
+
+  # Template Slack (optionnel)
+  slack.tmpl: |
+    {{ define "slack.title" }}
+    [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.SortedPairs.Values | join " " }}
+    {{ end }}
+
+    {{ define "slack.text" }}
+    {{ range .Alerts }}
+    *Alert:* {{ .Annotations.summary }}
+    *Severity:* {{ .Labels.severity }}
+    *Namespace:* {{ .Labels.namespace }}
+    *Description:* {{ .Annotations.description }}
+    {{ end }}
+    {{ end }}

@@ -1,0 +1,130 @@
+# =============================================================================
+# DaemonSet - Promtail
+# =============================================================================
+# Deploye un pod Promtail sur chaque node pour collecter les logs.
+# Lit les fichiers logs des pods dans /var/log/pods/
+# et les envoie a Loki.
+# =============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: monitoring
+  labels:
+    app: promtail
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/component: log-collector
+    app.kubernetes.io/version: "2.9"
+spec:
+  selector:
+    matchLabels:
+      app: promtail
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: promtail
+        app.kubernetes.io/name: promtail
+        app.kubernetes.io/component: log-collector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9080"
+    spec:
+      serviceAccountName: promtail
+      terminationGracePeriodSeconds: 30
+
+      # Tolerer tous les taints (tourner sur TOUS les nodes)
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+
+      containers:
+        - name: promtail
+          image: grafana/promtail:2.9.6
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-config.file=/etc/promtail/promtail.yaml"
+          ports:
+            - name: http
+              containerPort: 9080
+              protocol: TCP
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - DAC_READ_SEARCH
+
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+          volumeMounts:
+            - name: promtail-config
+              mountPath: /etc/promtail
+              readOnly: true
+            - name: pods-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: containers-logs
+              mountPath: /var/lib/rancher/k3s/agent/containerd
+              readOnly: true
+            - name: journal
+              mountPath: /var/log/journal
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: promtail-config
+          configMap:
+            name: promtail-config
+        # Logs des pods K3s
+        - name: pods-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        # Logs containers K3s (containerd)
+        - name: containers-logs
+          hostPath:
+            path: /var/lib/rancher/k3s/agent/containerd
+            type: DirectoryOrCreate
+        # Journal systemd
+        - name: journal
+          hostPath:
+            path: /var/log/journal
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir:
+            sizeLimit: 50Mi

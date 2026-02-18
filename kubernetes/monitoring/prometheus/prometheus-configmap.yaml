@@ -1,0 +1,216 @@
+# =============================================================================
+# ConfigMap - Prometheus Configuration
+# =============================================================================
+# Configuration complete Prometheus v2.50.
+#
+# Scrape configs :
+#   - kubernetes-nodes : metriques kubelet + cAdvisor
+#   - kubernetes-pods : auto-discovery via annotations
+#   - kubernetes-services : ServiceMonitor pattern
+#   - postgresql-exporter : metriques PostgreSQL
+#   - redis-exporter : metriques Redis
+#   - traefik : metriques Ingress
+#   - node-exporter : metriques OS/hardware
+#   - alertmanager : metriques AlertManager
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: config
+data:
+  prometheus.yml: |
+    # =======================================================================
+    # Global Configuration
+    # =======================================================================
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      scrape_timeout: 10s
+      external_labels:
+        cluster: saas-production
+        environment: production
+
+    # =======================================================================
+    # Alerting - AlertManager
+    # =======================================================================
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+                - alertmanager.monitoring.svc.cluster.local:9093
+
+    # =======================================================================
+    # Rule Files
+    # =======================================================================
+    rule_files:
+      - /etc/prometheus/rules/*.yaml
+
+    # =======================================================================
+    # Scrape Configs
+    # =======================================================================
+    scrape_configs:
+
+      # --- Prometheus self-monitoring ---
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+
+      # --- Kubernetes Nodes (kubelet + cAdvisor) ---
+      - job_name: kubernetes-nodes
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics
+
+      # --- Kubernetes cAdvisor (container metrics) ---
+      - job_name: kubernetes-cadvisor
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+      # --- Kubernetes Pods (auto-discovery via annotations) ---
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Scrape seulement les pods annotes prometheus.io/scrape=true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          # Utiliser le path defini dans l'annotation
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # Utiliser le port defini dans l'annotation
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # Labels utiles
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            action: replace
+            target_label: container
+
+      # --- Kubernetes Services ---
+      - job_name: kubernetes-services
+        kubernetes_sd_configs:
+          - role: service
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_service_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_service_name]
+            action: replace
+            target_label: service
+
+      # --- Node Exporter ---
+      - job_name: node-exporter
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: node-exporter
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: replace
+            target_label: node
+
+      # --- PostgreSQL Exporter ---
+      - job_name: postgresql
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["production"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: postgresql
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            action: keep
+            regex: postgres-exporter
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: instance
+
+      # --- Redis Exporter ---
+      - job_name: redis
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["production"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: redis
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            action: keep
+            regex: redis-exporter
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: instance
+
+      # --- Traefik ---
+      - job_name: traefik
+        static_configs:
+          - targets:
+              - traefik-internal.ingress.svc.cluster.local:9100
+
+      # --- AlertManager ---
+      - job_name: alertmanager
+        static_configs:
+          - targets:
+              - alertmanager.monitoring.svc.cluster.local:9093

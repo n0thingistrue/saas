@@ -1,0 +1,63 @@
+# =============================================================================
+# Kustomization - Monitoring Stack
+# =============================================================================
+# Orchestration du deploiement de la stack monitoring.
+# Ordre de deploiement :
+#   1. RBAC (ServiceAccounts, ClusterRoles)
+#   2. Prometheus (config, rules, StatefulSet)
+#   3. Node Exporter (DaemonSet)
+#   4. Loki (config, StatefulSet)
+#   5. Promtail (RBAC, config, DaemonSet)
+#   6. AlertManager (config, Deployment)
+#   7. Grafana (datasources, dashboards, Deployment)
+#
+# Utilisation :
+#   kubectl apply -k kubernetes/monitoring/
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+resources:
+  # --- Prometheus ---
+  - prometheus/prometheus-rbac.yaml
+  - prometheus/prometheus-configmap.yaml
+  - prometheus/prometheus-rules.yaml
+  - prometheus/prometheus-statefulset.yaml
+  - prometheus/prometheus-service.yaml
+
+  # --- Node Exporter ---
+  - node-exporter/node-exporter-daemonset.yaml
+
+  # --- Loki ---
+  - loki/loki-configmap.yaml
+  - loki/loki-statefulset.yaml
+  - loki/loki-service.yaml
+
+  # --- Promtail ---
+  - loki/promtail-rbac.yaml
+  - loki/promtail-configmap.yaml
+  - loki/promtail-daemonset.yaml
+
+  # --- AlertManager ---
+  - alertmanager/alertmanager-configmap.yaml
+  - alertmanager/alertmanager-deployment.yaml
+  - alertmanager/alertmanager-service.yaml
+
+  # --- Grafana ---
+  - grafana/grafana-configmap-datasources.yaml
+  - grafana/grafana-configmap-dashboards.yaml
+  - grafana/grafana-deployment.yaml
+  - grafana/grafana-service.yaml
+
+  # --- Grafana Dashboards ---
+  - grafana/dashboards/dashboard-infrastructure.yaml
+  - grafana/dashboards/dashboard-postgresql.yaml
+  - grafana/dashboards/dashboard-redis.yaml
+  - grafana/dashboards/dashboard-applications.yaml
+  - grafana/dashboards/dashboard-traefik.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: monitoring-stack
+  app.kubernetes.io/managed-by: kustomize

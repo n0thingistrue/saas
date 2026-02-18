@@ -1,0 +1,30 @@
+# =============================================================================
+# Service - Prometheus
+# =============================================================================
+# Service ClusterIP pour acceder a Prometheus.
+# Utilise par :
+#   - Grafana (datasource)
+#   - AlertManager (evaluation rules)
+#   - Autres services internes
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: server
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+      protocol: TCP

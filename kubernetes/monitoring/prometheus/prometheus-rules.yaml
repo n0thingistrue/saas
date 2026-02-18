@@ -1,0 +1,443 @@
+# =============================================================================
+# ConfigMap - Prometheus Recording Rules + Alerting Rules
+# =============================================================================
+# Toutes les regles Prometheus centralisees.
+#
+# Recording rules : pre-calcul de metriques couteuses
+# Alerting rules : declenchement d'alertes vers AlertManager
+#
+# Organisation :
+#   1. Recording rules (performance)
+#   2. Infrastructure alerts (nodes, disks, network)
+#   3. Database alerts (PostgreSQL, Redis)
+#   4. Application alerts (Backend, Frontend)
+#   5. Ingress alerts (Traefik, TLS)
+#   6. Samba-AD alerts (LDAP, Kerberos)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: rules
+data:
+  recording-rules.yaml: |
+    groups:
+      # =================================================================
+      # Recording Rules - Pre-calcul de metriques
+      # =================================================================
+      - name: recording.rules
+        rules:
+          # CPU utilisation par node (moyenne 5min)
+          - record: instance:node_cpu_utilisation:rate5m
+            expr: |
+              1 - avg without(cpu, mode) (
+                rate(node_cpu_seconds_total{mode="idle"}[5m])
+              )
+
+          # Memoire utilisation par node (ratio)
+          - record: instance:node_memory_utilisation:ratio
+            expr: |
+              1 - (
+                node_memory_MemAvailable_bytes
+                / node_memory_MemTotal_bytes
+              )
+
+          # Disque utilisation par node (ratio)
+          - record: instance:node_filesystem_utilisation:ratio
+            expr: |
+              1 - (
+                node_filesystem_avail_bytes{mountpoint="/"}
+                / node_filesystem_size_bytes{mountpoint="/"}
+              )
+
+          # API latence p95 par job
+          - record: job:api_http_request_duration_seconds:p95
+            expr: |
+              histogram_quantile(0.95,
+                sum(rate(http_request_duration_seconds_bucket[5m])) by (job, le)
+              )
+
+          # API latence p99 par job
+          - record: job:api_http_request_duration_seconds:p99
+            expr: |
+              histogram_quantile(0.99,
+                sum(rate(http_request_duration_seconds_bucket[5m])) by (job, le)
+              )
+
+          # Taux de requetes par service
+          - record: job:http_requests:rate5m
+            expr: |
+              sum(rate(http_requests_total[5m])) by (job)
+
+          # Taux d'erreurs par service
+          - record: job:http_errors:rate5m
+            expr: |
+              sum(rate(http_requests_total{status=~"5.."}[5m])) by (job)
+
+  alerting-rules.yaml: |
+    groups:
+      # =================================================================
+      # Infrastructure Alerts
+      # =================================================================
+      - name: infrastructure.alerts
+        rules:
+          # CRITIQUE : Node down
+          - alert: NodeDown
+            expr: up{job="kubernetes-nodes"} == 0
+            for: 2m
+            labels:
+              severity: critical
+              category: infrastructure
+            annotations:
+              summary: "Node {{ $labels.instance }} est DOWN"
+              description: "Le node ne repond plus depuis 2 minutes. Impact potentiel sur les workloads."
+
+          # WARNING : CPU node > 80%
+          - alert: NodeHighCPU
+            expr: instance:node_cpu_utilisation:rate5m > 0.80
+            for: 10m
+            labels:
+              severity: warning
+              category: infrastructure
+            annotations:
+              summary: "Node {{ $labels.instance }} CPU > 80% ({{ $value | humanizePercentage }})"
+              description: "Utilisation CPU elevee. Verifier les workloads gourmands."
+
+          # CRITIQUE : CPU node > 95%
+          - alert: NodeCriticalCPU
+            expr: instance:node_cpu_utilisation:rate5m > 0.95
+            for: 5m
+            labels:
+              severity: critical
+              category: infrastructure
+            annotations:
+              summary: "Node {{ $labels.instance }} CPU > 95% ({{ $value | humanizePercentage }})"
+              description: "CPU critique. Risque de throttling generalise."
+
+          # WARNING : Memoire node > 85%
+          - alert: NodeHighMemory
+            expr: instance:node_memory_utilisation:ratio > 0.85
+            for: 5m
+            labels:
+              severity: warning
+              category: infrastructure
+            annotations:
+              summary: "Node {{ $labels.instance }} memoire > 85% ({{ $value | humanizePercentage }})"
+              description: "Memoire elevee. Risque d'OOM Killer sur les pods."
+
+          # CRITIQUE : Memoire node > 95%
+          - alert: NodeCriticalMemory
+            expr: instance:node_memory_utilisation:ratio > 0.95
+            for: 2m
+            labels:
+              severity: critical
+              category: infrastructure
+            annotations:
+              summary: "Node {{ $labels.instance }} memoire > 95% ({{ $value | humanizePercentage }})"
+              description: "Memoire critique. OOM Killer imminent."
+
+          # WARNING : Disque > 80%
+          - alert: NodeDiskHigh
+            expr: instance:node_filesystem_utilisation:ratio > 0.80
+            for: 10m
+            labels:
+              severity: warning
+              category: infrastructure
+            annotations:
+              summary: "Node {{ $labels.instance }} disque > 80% ({{ $value | humanizePercentage }})"
+              description: "Espace disque bas. Nettoyer les logs ou augmenter le volume."
+
+          # CRITIQUE : Disque > 90%
+          - alert: NodeDiskCritical
+            expr: instance:node_filesystem_utilisation:ratio > 0.90
+            for: 5m
+            labels:
+              severity: critical
+              category: infrastructure
+            annotations:
+              summary: "Node {{ $labels.instance }} disque > 90% ({{ $value | humanizePercentage }})"
+              description: "Disque presque plein. Actions immediates requises."
+
+          # WARNING : Pod en CrashLoopBackOff
+          - alert: PodCrashLooping
+            expr: increase(kube_pod_container_status_restarts_total[1h]) > 5
+            for: 0m
+            labels:
+              severity: warning
+              category: infrastructure
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} en CrashLoop ({{ $value }} restarts/h)"
+              description: "Le pod redemarre en boucle. Verifier les logs."
+
+          # WARNING : Pod en Pending
+          - alert: PodPending
+            expr: kube_pod_status_phase{phase="Pending"} == 1
+            for: 5m
+            labels:
+              severity: warning
+              category: infrastructure
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} en Pending depuis 5min"
+              description: "Le pod ne peut pas etre schedule. Verifier les ressources disponibles."
+
+      # =================================================================
+      # PostgreSQL Alerts
+      # =================================================================
+      - name: postgresql.alerts
+        rules:
+          - alert: PostgreSQLDown
+            expr: pg_up == 0
+            for: 1m
+            labels:
+              severity: critical
+              category: database
+            annotations:
+              summary: "PostgreSQL {{ $labels.instance }} est DOWN"
+              description: "L'exporter ne peut pas se connecter a PostgreSQL."
+
+          - alert: PostgreSQLNoPrimary
+            expr: count(pg_replication_is_replica == 0) == 0
+            for: 1m
+            labels:
+              severity: critical
+              category: database
+            annotations:
+              summary: "PostgreSQL n'a plus de PRIMARY"
+              description: "Aucun primary detecte. Patroni failover en cours ou echoue."
+
+          - alert: PostgreSQLReplicationLag
+            expr: pg_replication_lag > 30
+            for: 2m
+            labels:
+              severity: warning
+              category: database
+            annotations:
+              summary: "PostgreSQL replication lag > 30s ({{ $value }}s)"
+              description: "Le replica est en retard. RPO en danger."
+
+          - alert: PostgreSQLReplicationLagCritical
+            expr: pg_replication_lag > 300
+            for: 1m
+            labels:
+              severity: critical
+              category: database
+            annotations:
+              summary: "PostgreSQL replication lag > 5min ({{ $value }}s)"
+              description: "Lag critique. RPO depasse. Verifier le replica et le reseau."
+
+          - alert: PostgreSQLTooManyConnections
+            expr: |
+              sum(pg_stat_activity_count) by (instance)
+              / pg_settings_max_connections > 0.80
+            for: 5m
+            labels:
+              severity: warning
+              category: database
+            annotations:
+              summary: "PostgreSQL connexions > 80% du max"
+              description: "Pool de connexions presque sature. Verifier les connexions idle."
+
+          - alert: PostgreSQLDeadlocks
+            expr: increase(pg_stat_database_deadlocks[5m]) > 0
+            for: 0m
+            labels:
+              severity: warning
+              category: database
+            annotations:
+              summary: "PostgreSQL deadlock detecte ({{ $value }})"
+              description: "Des deadlocks se produisent. Verifier les transactions concurrentes."
+
+          - alert: PostgreSQLSlowQueries
+            expr: |
+              rate(pg_stat_statements_mean_time_seconds{quantile="0.99"}[5m]) > 1
+            for: 5m
+            labels:
+              severity: warning
+              category: database
+            annotations:
+              summary: "PostgreSQL slow queries p99 > 1s"
+              description: "Des requetes lentes impactent les performances."
+
+      # =================================================================
+      # Redis Alerts
+      # =================================================================
+      - name: redis.alerts
+        rules:
+          - alert: RedisDown
+            expr: redis_up == 0
+            for: 1m
+            labels:
+              severity: critical
+              category: database
+            annotations:
+              summary: "Redis {{ $labels.instance }} est DOWN"
+              description: "L'exporter ne peut pas se connecter a Redis."
+
+          - alert: RedisMasterDown
+            expr: |
+              redis_instance_info{role="master"} == 0
+              or absent(redis_instance_info{role="master"})
+            for: 1m
+            labels:
+              severity: critical
+              category: database
+            annotations:
+              summary: "Redis n'a plus de MASTER"
+              description: "Aucun master Redis detecte. Sentinel failover en cours."
+
+          - alert: RedisMemoryHigh
+            expr: |
+              redis_memory_used_bytes / redis_memory_max_bytes * 100 > 90
+            for: 5m
+            labels:
+              severity: warning
+              category: database
+            annotations:
+              summary: "Redis memoire > 90% ({{ $value | humanize }}%)"
+              description: "Redis approche de maxmemory. Eviction active."
+
+          - alert: RedisMemoryCritical
+            expr: |
+              redis_memory_used_bytes / redis_memory_max_bytes * 100 > 98
+            for: 2m
+            labels:
+              severity: critical
+              category: database
+            annotations:
+              summary: "Redis memoire > 98% ({{ $value | humanize }}%)"
+              description: "Redis presque plein. Risque de perte de donnees."
+
+          - alert: RedisKeyEviction
+            expr: increase(redis_evicted_keys_total[5m]) > 100
+            for: 5m
+            labels:
+              severity: warning
+              category: database
+            annotations:
+              summary: "Redis eviction > 100 cles/5min ({{ $value }})"
+              description: "Beaucoup de cles evictees. Augmenter maxmemory ou optimiser le cache."
+
+      # =================================================================
+      # Application Alerts
+      # =================================================================
+      - name: application.alerts
+        rules:
+          - alert: BackendDown
+            expr: |
+              absent(up{job="kubernetes-pods", namespace="production", container="backend"} == 1)
+              or count(up{job="kubernetes-pods", namespace="production", container="backend"} == 1) == 0
+            for: 1m
+            labels:
+              severity: critical
+              category: application
+            annotations:
+              summary: "Backend NestJS est DOWN"
+              description: "Aucun pod backend ne repond. L'API est indisponible."
+
+          - alert: FrontendDown
+            expr: |
+              absent(up{job="kubernetes-pods", namespace="production", container="frontend"} == 1)
+              or count(up{job="kubernetes-pods", namespace="production", container="frontend"} == 1) == 0
+            for: 1m
+            labels:
+              severity: critical
+              category: application
+            annotations:
+              summary: "Frontend Next.js est DOWN"
+              description: "Aucun pod frontend ne repond. L'application web est indisponible."
+
+          - alert: HighErrorRate
+            expr: |
+              (
+                sum(rate(http_requests_total{namespace="production", status=~"5.."}[5m])) by (job)
+                / sum(rate(http_requests_total{namespace="production"}[5m])) by (job)
+              ) * 100 > 5
+            for: 2m
+            labels:
+              severity: critical
+              category: application
+            annotations:
+              summary: "{{ $labels.job }} erreurs 5xx > 5% ({{ $value | humanize }}%)"
+              description: "Taux d'erreurs eleve sur le service {{ $labels.job }}."
+
+          - alert: HighLatencyP95
+            expr: job:api_http_request_duration_seconds:p95 > 0.5
+            for: 5m
+            labels:
+              severity: warning
+              category: application
+            annotations:
+              summary: "{{ $labels.job }} latence p95 > 500ms ({{ $value | humanize }}s)"
+              description: "Latence elevee. Verifier les queries DB et le cache."
+
+      # =================================================================
+      # Ingress Alerts
+      # =================================================================
+      - name: ingress.alerts
+        rules:
+          - alert: TraefikDown
+            expr: |
+              absent(up{job="traefik"} == 1)
+            for: 1m
+            labels:
+              severity: critical
+              category: ingress
+            annotations:
+              summary: "Traefik Ingress est DOWN"
+              description: "Tout le trafic entrant est bloque."
+
+          - alert: CertExpiringSoon
+            expr: |
+              (traefik_tls_certs_not_after - time()) / 86400 < 7
+            for: 1h
+            labels:
+              severity: warning
+              category: ingress
+            annotations:
+              summary: "Certificat TLS expire dans {{ $value | humanize }} jours"
+              description: "Verifier cert-manager et le renouvellement ACME."
+
+          - alert: TraefikHighErrorRate
+            expr: |
+              (
+                sum(rate(traefik_service_requests_total{code=~"5.."}[5m]))
+                / sum(rate(traefik_service_requests_total[5m]))
+              ) * 100 > 5
+            for: 2m
+            labels:
+              severity: critical
+              category: ingress
+            annotations:
+              summary: "Traefik erreurs 5xx > 5% ({{ $value | humanize }}%)"
+              description: "Taux d'erreurs backend eleve via Traefik."
+
+      # =================================================================
+      # Samba-AD Alerts
+      # =================================================================
+      - name: samba-ad.alerts
+        rules:
+          - alert: SambaADDown
+            expr: |
+              kube_pod_status_phase{namespace="production", pod=~"samba-ad-.*", phase="Running"} == 0
+              or absent(kube_pod_status_phase{namespace="production", pod=~"samba-ad-.*", phase="Running"})
+            for: 1m
+            labels:
+              severity: critical
+              category: authentication
+            annotations:
+              summary: "Samba Active Directory est DOWN"
+              description: "Le Domain Controller est indisponible. Auth LDAP/Kerberos KO."
+
+          - alert: SambaADNotReady
+            expr: kube_pod_status_ready{namespace="production", pod=~"samba-ad-.*"} == 0
+            for: 2m
+            labels:
+              severity: warning
+              category: authentication
+            annotations:
+              summary: "Samba-AD n'est pas Ready"
+              description: "Le health check LDAP echoue. Service potentiellement degrade."

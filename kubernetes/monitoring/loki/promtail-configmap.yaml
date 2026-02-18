@@ -1,0 +1,106 @@
+# =============================================================================
+# ConfigMap - Promtail Configuration
+# =============================================================================
+# Promtail collecte les logs de tous les pods via les fichiers logs K3s.
+# Les logs sont enrichis avec les labels Kubernetes (namespace, pod, container).
+# Pipeline : detection JSON automatique + parsing.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: monitoring
+  labels:
+    app: promtail
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/component: config
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+      log_level: info
+
+    positions:
+      filename: /tmp/positions.yaml
+
+    clients:
+      - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+        batchwait: 1s
+        batchsize: 1048576
+        timeout: 10s
+        tenant_id: ""
+
+    scrape_configs:
+      # --- Kubernetes Pods Logs ---
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        pipeline_stages:
+          # Detecter et parser les logs JSON
+          - cri: {}
+          - match:
+              selector: '{app=~".+"}'
+              stages:
+                - json:
+                    expressions:
+                      level: level
+                      msg: msg
+                      message: message
+                      timestamp: timestamp
+                      ts: ts
+                - labels:
+                    level:
+          # Dropper les logs de healthcheck (bruit)
+          - match:
+              selector: '{namespace="production"} |~ "GET /health"'
+              action: drop
+              drop_counter_reason: healthcheck
+          # Dropper les logs de metrics scraping
+          - match:
+              selector: '{namespace="production"} |~ "GET /metrics"'
+              action: drop
+              drop_counter_reason: metrics_scrape
+        relabel_configs:
+          # Garder uniquement les pods avec des logs
+          - source_labels: [__meta_kubernetes_pod_controller_name]
+            regex: .+
+            action: keep
+          # Labels utiles
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            action: replace
+            target_label: container
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: replace
+            target_label: app
+          - source_labels: [__meta_kubernetes_pod_label_tier]
+            action: replace
+            target_label: tier
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: replace
+            target_label: node
+          # Chemin des logs K3s
+          - replacement: /var/log/pods/*$1/*.log
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            target_label: __path__
+
+      # --- System logs (journal) ---
+      - job_name: systemd-journal
+        journal:
+          max_age: 12h
+          labels:
+            job: systemd-journal
+        relabel_configs:
+          - source_labels: [__journal__systemd_unit]
+            target_label: unit
+          - source_labels: [__journal__hostname]
+            target_label: hostname

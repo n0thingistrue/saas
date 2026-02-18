@@ -1,0 +1,293 @@
+# =============================================================================
+# Grafana Dashboard - Applications (Backend + Frontend)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-applications
+  namespace: monitoring
+  labels:
+    app: grafana
+    grafana_dashboard: "1"
+data:
+  applications.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "graphTooltip": 1,
+      "panels": [
+        {
+          "title": "Backend NestJS",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "collapsed": false
+        },
+        {
+          "title": "Backend Pods Up",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "yellow", "value": 2 },
+                  { "color": "green", "value": 3 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "count(up{job=\"kubernetes-pods\", namespace=\"production\", container=\"backend\"} == 1) or vector(0)", "legendFormat": "Running" }
+          ]
+        },
+        {
+          "title": "Request Rate",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "reqps" } },
+          "targets": [
+            { "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"backend\"}[5m]))", "legendFormat": "req/s" }
+          ]
+        },
+        {
+          "title": "Error Rate (5xx)",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.01 },
+                  { "color": "red", "value": 0.05 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"backend\", status=~\"5..\"}[5m])) / sum(rate(http_requests_total{namespace=\"production\", container=\"backend\"}[5m])) or vector(0)",
+              "legendFormat": "Error %"
+            }
+          ]
+        },
+        {
+          "title": "Latency p95",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.3 },
+                  { "color": "red", "value": 0.5 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace=\"production\", container=\"backend\"}[5m])) by (le))",
+              "legendFormat": "p95"
+            }
+          ]
+        },
+        {
+          "title": "Active Connections",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "targets": [
+            { "expr": "sum(backend_active_connections{namespace=\"production\"}) or vector(0)", "legendFormat": "Active" }
+          ]
+        },
+        {
+          "title": "DB Pool Usage",
+          "type": "gauge",
+          "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit", "min": 0, "max": 1,
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.7 },
+                  { "color": "red", "value": 0.9 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "backend_database_pool_active{namespace=\"production\"} / backend_database_pool_max{namespace=\"production\"} or vector(0)",
+              "legendFormat": "Pool"
+            }
+          ]
+        },
+        {
+          "title": "Backend Request Rate & Errors",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "reqps" } },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"backend\"}[5m]))",
+              "legendFormat": "Total req/s"
+            },
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"backend\", status=~\"2..\"}[5m]))",
+              "legendFormat": "2xx/s"
+            },
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"backend\", status=~\"4..\"}[5m]))",
+              "legendFormat": "4xx/s"
+            },
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"backend\", status=~\"5..\"}[5m]))",
+              "legendFormat": "5xx/s"
+            }
+          ]
+        },
+        {
+          "title": "Backend Latency (p50, p95, p99)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{namespace=\"production\", container=\"backend\"}[5m])) by (le))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace=\"production\", container=\"backend\"}[5m])) by (le))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace=\"production\", container=\"backend\"}[5m])) by (le))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "title": "Frontend Next.js",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
+          "collapsed": false
+        },
+        {
+          "title": "Frontend Pods Up",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 2 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "count(up{job=\"kubernetes-pods\", namespace=\"production\", container=\"frontend\"} == 1) or vector(0)", "legendFormat": "Running" }
+          ]
+        },
+        {
+          "title": "Frontend Request Rate",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "reqps" } },
+          "targets": [
+            { "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"frontend\"}[5m]))", "legendFormat": "req/s" }
+          ]
+        },
+        {
+          "title": "Frontend Error Rate",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "percentunit" } },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"frontend\", status=~\"5..\"}[5m])) / sum(rate(http_requests_total{namespace=\"production\", container=\"frontend\"}[5m])) or vector(0)",
+              "legendFormat": "Error %"
+            }
+          ]
+        },
+        {
+          "title": "Frontend SSR Latency p95",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace=\"production\", container=\"frontend\"}[5m])) by (le))",
+              "legendFormat": "p95"
+            }
+          ]
+        },
+        {
+          "title": "Frontend Request Rate & Errors",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "reqps" } },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"frontend\"}[5m]))",
+              "legendFormat": "Total"
+            },
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"production\", container=\"frontend\", status=~\"5..\"}[5m]))",
+              "legendFormat": "5xx"
+            }
+          ]
+        },
+        {
+          "title": "Frontend SSR Latency",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{namespace=\"production\", container=\"frontend\"}[5m])) by (le))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace=\"production\", container=\"frontend\"}[5m])) by (le))",
+              "legendFormat": "p95"
+            }
+          ]
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "tags": ["applications", "backend", "frontend"],
+      "templating": {
+        "list": [
+          {
+            "name": "DS_PROMETHEUS",
+            "type": "datasource",
+            "query": "prometheus"
+          }
+        ]
+      },
+      "time": { "from": "now-1h", "to": "now" },
+      "title": "Applications - Backend & Frontend",
+      "uid": "applications-saas"
+    }

@@ -1,0 +1,206 @@
+# =============================================================================
+# Deployment - Grafana
+# =============================================================================
+# Grafana 10.x pour la visualisation des metriques et logs.
+# 1 replica sur Node 1 (monitoring centralise).
+#
+# Datasources provisionnees : Prometheus + Loki
+# Dashboards provisionnes : 5 dashboards en ConfigMaps
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: visualization
+    app.kubernetes.io/version: "10.4"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/component: visualization
+    spec:
+      serviceAccountName: default
+      terminationGracePeriodSeconds: 30
+
+      # Node 1 prefere
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 80
+              preference:
+                matchExpressions:
+                  - key: node-size
+                    operator: In
+                    values: ["large"]
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+
+      # Init : permissions volume
+      initContainers:
+        - name: init-chown
+          image: busybox:1.36
+          command: ["sh", "-c", "chown -R 472:472 /var/lib/grafana"]
+          volumeMounts:
+            - name: grafana-data
+              mountPath: /var/lib/grafana
+          securityContext:
+            runAsUser: 0
+
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.4.2
+          imagePullPolicy: IfNotPresent
+          env:
+            # Admin password depuis Secret
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-secrets
+                  key: GF_SECURITY_ADMIN_PASSWORD
+            # Server
+            - name: GF_SERVER_ROOT_URL
+              value: "https://monitoring.saas.local"
+            - name: GF_SERVER_SERVE_FROM_SUB_PATH
+              value: "false"
+            # Auth
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "false"
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "false"
+            # Plugins
+            - name: GF_INSTALL_PLUGINS
+              value: "grafana-piechart-panel"
+            # Security
+            - name: GF_SECURITY_COOKIE_SECURE
+              value: "true"
+            - name: GF_SECURITY_STRICT_TRANSPORT_SECURITY
+              value: "true"
+            - name: GF_SECURITY_CONTENT_SECURITY_POLICY
+              value: "true"
+            # Logging
+            - name: GF_LOG_MODE
+              value: "console"
+            - name: GF_LOG_LEVEL
+              value: "info"
+            # Provisioning paths
+            - name: GF_PATHS_PROVISIONING
+              value: "/etc/grafana/provisioning"
+
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          # --- Health Checks ---
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # --- Resources ---
+          resources:
+            requests:
+              cpu: 300m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: "1Gi"
+
+          # --- Security ---
+          securityContext:
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          # --- Volumes ---
+          volumeMounts:
+            - name: grafana-data
+              mountPath: /var/lib/grafana
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: grafana-dashboard-providers
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            # Dashboards JSON
+            - name: dashboard-infrastructure
+              mountPath: /var/lib/grafana/dashboards/infrastructure.json
+              subPath: infrastructure.json
+              readOnly: true
+            - name: dashboard-postgresql
+              mountPath: /var/lib/grafana/dashboards/postgresql.json
+              subPath: postgresql.json
+              readOnly: true
+            - name: dashboard-redis
+              mountPath: /var/lib/grafana/dashboards/redis.json
+              subPath: redis.json
+              readOnly: true
+            - name: dashboard-applications
+              mountPath: /var/lib/grafana/dashboards/applications.json
+              subPath: applications.json
+              readOnly: true
+            - name: dashboard-traefik
+              mountPath: /var/lib/grafana/dashboards/traefik.json
+              subPath: traefik.json
+              readOnly: true
+
+      volumes:
+        - name: grafana-data
+          persistentVolumeClaim:
+            claimName: grafana-pvc
+        - name: grafana-datasources
+          configMap:
+            name: grafana-datasources
+        - name: grafana-dashboard-providers
+          configMap:
+            name: grafana-dashboard-providers
+        - name: dashboard-infrastructure
+          configMap:
+            name: grafana-dashboard-infrastructure
+        - name: dashboard-postgresql
+          configMap:
+            name: grafana-dashboard-postgresql
+        - name: dashboard-redis
+          configMap:
+            name: grafana-dashboard-redis
+        - name: dashboard-applications
+          configMap:
+            name: grafana-dashboard-applications
+        - name: dashboard-traefik
+          configMap:
+            name: grafana-dashboard-traefik

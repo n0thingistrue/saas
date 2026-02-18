@@ -1,0 +1,267 @@
+# =============================================================================
+# Grafana Dashboard - Traefik Ingress
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-traefik
+  namespace: monitoring
+  labels:
+    app: grafana
+    grafana_dashboard: "1"
+data:
+  traefik.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "graphTooltip": 1,
+      "panels": [
+        {
+          "title": "Traefik Overview",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "collapsed": false
+        },
+        {
+          "title": "Traefik Up",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+              ]
+            }
+          },
+          "targets": [
+            { "expr": "up{job=\"traefik\"}", "legendFormat": "Traefik" }
+          ]
+        },
+        {
+          "title": "Total Requests/s",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "reqps" } },
+          "targets": [
+            { "expr": "sum(rate(traefik_service_requests_total{service=~\"$service\"}[5m]))", "legendFormat": "req/s" }
+          ]
+        },
+        {
+          "title": "Error Rate (5xx)",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.01 },
+                  { "color": "red", "value": 0.05 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(traefik_service_requests_total{code=~\"5..\", service=~\"$service\"}[5m])) / sum(rate(traefik_service_requests_total{service=~\"$service\"}[5m])) or vector(0)",
+              "legendFormat": "5xx %"
+            }
+          ]
+        },
+        {
+          "title": "Active Connections",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "targets": [
+            { "expr": "sum(traefik_entrypoint_open_connections{entrypoint=~\"$entrypoint\"})", "legendFormat": "Open" }
+          ]
+        },
+        {
+          "title": "Cert Expiry (days)",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "d",
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "yellow", "value": 14 },
+                  { "color": "green", "value": 30 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "min((traefik_tls_certs_not_after - time()) / 86400)",
+              "legendFormat": "Min Expiry"
+            }
+          ]
+        },
+        {
+          "title": "Avg Response Time",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            {
+              "expr": "sum(rate(traefik_service_request_duration_seconds_sum{service=~\"$service\"}[5m])) / sum(rate(traefik_service_request_duration_seconds_count{service=~\"$service\"}[5m]))",
+              "legendFormat": "Avg"
+            }
+          ]
+        },
+        {
+          "title": "Traffic",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+          "collapsed": false
+        },
+        {
+          "title": "Requests per Second by Service",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "reqps" } },
+          "targets": [
+            {
+              "expr": "sum(rate(traefik_service_requests_total{service=~\"$service\"}[5m])) by (service)",
+              "legendFormat": "{{ service }}"
+            }
+          ]
+        },
+        {
+          "title": "HTTP Status Codes Distribution",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "reqps" } },
+          "targets": [
+            {
+              "expr": "sum(rate(traefik_service_requests_total{service=~\"$service\", code=~\"2..\"}[5m]))",
+              "legendFormat": "2xx"
+            },
+            {
+              "expr": "sum(rate(traefik_service_requests_total{service=~\"$service\", code=~\"3..\"}[5m]))",
+              "legendFormat": "3xx"
+            },
+            {
+              "expr": "sum(rate(traefik_service_requests_total{service=~\"$service\", code=~\"4..\"}[5m]))",
+              "legendFormat": "4xx"
+            },
+            {
+              "expr": "sum(rate(traefik_service_requests_total{service=~\"$service\", code=~\"5..\"}[5m]))",
+              "legendFormat": "5xx"
+            }
+          ]
+        },
+        {
+          "title": "Response Time Percentiles",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(traefik_service_request_duration_seconds_bucket{service=~\"$service\"}[5m])) by (le))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{service=~\"$service\"}[5m])) by (le))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{service=~\"$service\"}[5m])) by (le))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "title": "Open Connections per EntryPoint",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "targets": [
+            {
+              "expr": "traefik_entrypoint_open_connections{entrypoint=~\"$entrypoint\"}",
+              "legendFormat": "{{ entrypoint }}"
+            }
+          ]
+        },
+        {
+          "title": "TLS Certificates Expiry Countdown",
+          "type": "table",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "targets": [
+            {
+              "expr": "(traefik_tls_certs_not_after - time()) / 86400",
+              "legendFormat": "{{ cn }}",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "d" },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "Time" }, "properties": [{ "id": "custom.hidden", "value": true }] }
+            ]
+          }
+        },
+        {
+          "title": "Top Routes by Traffic",
+          "type": "table",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "targets": [
+            {
+              "expr": "topk(10, sum(rate(traefik_service_requests_total[5m])) by (service))",
+              "legendFormat": "{{ service }}",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "reqps" } }
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "tags": ["traefik", "ingress", "tls"],
+      "templating": {
+        "list": [
+          {
+            "name": "DS_PROMETHEUS",
+            "type": "datasource",
+            "query": "prometheus"
+          },
+          {
+            "name": "service",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+            "query": "label_values(traefik_service_requests_total, service)",
+            "includeAll": true,
+            "allValue": ".*",
+            "current": { "text": "All", "value": "$__all" }
+          },
+          {
+            "name": "entrypoint",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+            "query": "label_values(traefik_entrypoint_requests_total, entrypoint)",
+            "includeAll": true,
+            "allValue": ".*",
+            "current": { "text": "All", "value": "$__all" }
+          }
+        ]
+      },
+      "time": { "from": "now-1h", "to": "now" },
+      "title": "Traefik - Ingress Controller",
+      "uid": "traefik-ingress"
+    }
