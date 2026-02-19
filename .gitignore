@@ -72,3 +72,5 @@ backup/tmp/
 # Tests results
 scripts/testing/results/
 scripts/compliance/reports/
+.secrets.env 
+k8s/secrets/*.yaml 

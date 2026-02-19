@@ -238,6 +238,8 @@ infrastructure-rncp/
 |   +-- install/                        # Installation K3s (4 fichiers)
 |   +-- bootstrap/                      # Bootstrap orchestration (2 fichiers)
 |   +-- argocd/                         # ArgoCD setup + sync (2 fichiers)
+|   +-- setup-secrets.sh                # Generation securisee des secrets
+|   +-- health-check.sh                 # Health check complet infrastructure
 |   +-- tests/                          # Tests de validation (9 fichiers)
 |       +-- test-failover-postgresql.sh
 |       +-- test-failover-redis.sh
@@ -377,6 +379,84 @@ infrastructure-rncp/
 
   VALIDATION REUSSIE
 ```
+
+---
+
+## Scripts utilitaires
+
+Deux scripts facilitent la gestion quotidienne de l'infrastructure.
+
+### setup-secrets.sh — Generation securisee des secrets
+
+Genere des passwords forts aleatoires pour tous les services, cree les Kubernetes Secrets
+et les SealedSecrets (chiffres) pour un stockage securise dans Git.
+
+```bash
+# Generer tous les secrets (14 secrets, 8 services)
+./scripts/setup-secrets.sh
+
+# Regenerer tous les secrets (backup automatique des anciens)
+./scripts/setup-secrets.sh --regenerate
+
+# Lister les secrets configures (sans afficher les valeurs)
+./scripts/setup-secrets.sh --list
+
+# Appliquer les SealedSecrets dans le cluster
+./scripts/setup-secrets.sh --apply
+```
+
+**Services couverts :**
+
+| Service | Secrets generes |
+|---------|----------------|
+| PostgreSQL | `postgres`, `replicator`, `app_user` (3 passwords) |
+| Redis | `requirepass` (1 password) |
+| Samba-AD | `admin`, `ldap_bind` (2 passwords) |
+| Grafana | `admin` (1 password) |
+| Traefik | Dashboard basic auth (1 password + bcrypt hash) |
+| Backend NestJS | `jwt_secret`, `jwt_refresh_secret`, `db_password` (3 secrets) |
+| Frontend Next.js | `nextauth_secret` (1 secret) |
+| S3 Backup | `access_key`, `secret_key` (2 credentials) |
+
+**Pre-requis :** `openssl`, `kubectl`, `kubeseal` (optionnel)
+
+### health-check.sh — Health check infrastructure
+
+Verification complete de l'etat de tous les composants avec sortie coloree et codes de retour exploitables.
+
+```bash
+# Check complet (7 categories, ~30 verifications)
+./scripts/health-check.sh
+
+# Check rapide (nodes + pods seulement)
+./scripts/health-check.sh --quick
+
+# Sortie detaillee avec suggestions de fix
+./scripts/health-check.sh --verbose
+
+# Output JSON pour integration monitoring
+./scripts/health-check.sh --json
+
+# Check un composant specifique
+./scripts/health-check.sh --component=certificates
+./scripts/health-check.sh --component=storage
+```
+
+**Categories verifiees :**
+
+| Check | Verifications |
+|-------|---------------|
+| K3s Cluster | Nodes Ready, version K3s, control plane |
+| Pods | Status par namespace, restarts excessifs, pods problematiques |
+| Services | PostgreSQL, Redis, Backend, Frontend, Grafana, Prometheus, Traefik (TCP/HTTP) |
+| Certificats | Status cert-manager, expiration < 30 jours, certificats invalides |
+| Stockage | PVC Bound, disk pressure nodes |
+| Monitoring | Prometheus targets, alertes firing, Grafana datasources |
+| ArgoCD | Applications synced, health status, OutOfSync |
+
+**Codes de sortie :** `0` = OK, `1` = Warnings, `2` = Critical
+
+**Pre-requis :** `kubectl`, `python3` (parsing JSON)
 
 ---
 
